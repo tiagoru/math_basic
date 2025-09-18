@@ -1,28 +1,61 @@
 import random
+import os
+from collections import Counter
+from pathlib import Path
+
 import streamlit as st
+from PIL import Image
 
-st.set_page_config(page_title="Gui Gui Kids Math Trainer", page_icon="🧮", layout="centered")
+st.set_page_config(page_title="Gui Gui Math Trainer", page_icon="🧮", layout="centered")
 
- ---------- "Minecraft" blocks (emoji approximations) ----------
+# ========== Assets & Blocks ==========
+ASSET_DIR = Path("assets/blocks")
+
+# Define available blocks, with filenames (put your PNGs in assets/blocks/)
+# Rarity weights make special blocks a little rarer.
 BLOCKS = [
-    {"name": "Grass", "emoji": "🟩"},
-    {"name": "Dirt", "emoji": "🟫"},
-    {"name": "Stone", "emoji": "🪨"},
-    {"name": "Wood", "emoji": "🪵"},
-    {"name": "Brick", "emoji": "🧱"},
-    {"name": "Sand", "emoji": "🟨"},
-    {"name": "Water", "emoji": "🌊"},
-    {"name": "Coal", "emoji": "⚫"},
-    {"name": "Iron", "emoji": "⚙️"},
-    {"name": "Gold", "emoji": "🟨⭐"},
-    {"name": "Lapis", "emoji": "🔷"},
-    {"name": "Redstone", "emoji": "🔴"},
-    {"name": "Diamond", "emoji": "💎"},
-    {"name": "Obsidian", "emoji": "⬛"},
-    {"name": "TNT", "emoji": "🧨"},
+    {"name": "Grass",        "emoji": "🟩", "file": "grass.png",         "weight": 8},
+    {"name": "Dirt",         "emoji": "🟫", "file": "dirt.png",          "weight": 8},
+    {"name": "Stone",        "emoji": "🪨", "file": "stone.png",         "weight": 8},
+    {"name": "Oak Planks",   "emoji": "🪵", "file": "oak_planks.png",    "weight": 6},
+    {"name": "Brick",        "emoji": "🧱", "file": "brick.png",         "weight": 5},
+    {"name": "Sand",         "emoji": "🟨", "file": "sand.png",          "weight": 6},
+    {"name": "Water",        "emoji": "🌊", "file": "water.png",         "weight": 5},
+    {"name": "Coal Ore",     "emoji": "⚫", "file": "coal_ore.png",      "weight": 4},
+    {"name": "Iron Ore",     "emoji": "⚙️", "file": "iron_ore.png",      "weight": 3},
+    {"name": "Gold Ore",     "emoji": "⭐", "file": "gold_ore.png",      "weight": 2},
+    {"name": "Lapis Ore",    "emoji": "🔷", "file": "lapis_ore.png",     "weight": 2},
+    {"name": "Redstone Ore", "emoji": "🔴", "file": "redstone_ore.png",  "weight": 2},
+    {"name": "Diamond Ore",  "emoji": "💎", "file": "diamond_ore.png",   "weight": 1},
+    {"name": "Obsidian",     "emoji": "⬛", "file": "obsidian.png",      "weight": 1},
+    {"name": "TNT",          "emoji": "🧨", "file": "tnt.png",           "weight": 1},
 ]
 
-# ---------- Helpers ----------
+# Cache images so we don’t reload every time
+@st.cache_data(show_spinner=False)
+def load_block_images():
+    imgs = {}
+    for b in BLOCKS:
+        path = ASSET_DIR / b["file"]
+        if path.exists():
+            try:
+                img = Image.open(path).convert("RGBA")
+                imgs[b["name"]] = img
+            except Exception:
+                imgs[b["name"]] = None
+        else:
+            imgs[b["name"]] = None
+    return imgs
+
+BLOCK_IMAGES = load_block_images()
+
+def get_block_visual(name):
+    """Return (image or None, emoji) for a block name."""
+    img = BLOCK_IMAGES.get(name)
+    emoji = next(b["emoji"] for b in BLOCKS if b["name"] == name)
+    return img, emoji
+
+# ========== Math Generators ==========
 def gen_add(min_n, max_n):
     a = random.randint(min_n, max_n); b = random.randint(min_n, max_n)
     return a, b, "+", a + b
@@ -53,11 +86,13 @@ def generate_questions(n, ops, min_n, max_n):
         qs.append({"a": a, "b": b, "op": sym, "answer": ans, "text": f"{a} {sym} {b} = ?"})
     return qs
 
+# Weighted random block award
 def award_block():
-    """Pick a random block and add to inventory; return it."""
-    block = random.choice(BLOCKS)
-    st.session_state.inventory.append(block["name"])
-    return block
+    names = [b["name"] for b in BLOCKS]
+    weights = [b["weight"] for b in BLOCKS]
+    choice = random.choices(names, weights=weights, k=1)[0]
+    st.session_state.inventory.append(choice)
+    return choice
 
 def reset_game(num_q=10, min_n=0, max_n=12, ops=None):
     if ops is None: ops = ["+", "−", "×", "÷"]
@@ -70,31 +105,41 @@ def reset_game(num_q=10, min_n=0, max_n=12, ops=None):
     st.session_state.question_done = False
     st.session_state.last_correct = None
     st.session_state.user_answer = None
-    st.session_state.inventory = []  # clear collected blocks for a fresh run
+    st.session_state.inventory = []
 
 def inventory_counts():
     return Counter(st.session_state.inventory)
 
-def inventory_display(compact=False):
+def inventory_gallery():
     counts = inventory_counts()
     if not counts:
         st.caption("No blocks yet — answer correctly to collect some! ⛏️")
         return
-    if compact:
-        st.write("".join(
-            (next(b["emoji"] for b in BLOCKS if b["name"] == name) + " ") * cnt
-            for name, cnt in counts.items()
-        ))
-        return
-    # Grid style
-    st.write("**Your Blocks**")
-    rows = []
+    # Display as a responsive grid
+    cols = st.columns(5)
+    i = 0
     for name, cnt in sorted(counts.items()):
-        emoji = next(b["emoji"] for b in BLOCKS if b["name"] == name)
-        rows.append(f"- {emoji} **{name}** × **{cnt}**")
-    st.markdown("\n".join(rows))
+        img, emoji = get_block_visual(name)
+        with cols[i % len(cols)]:
+            if img is not None:
+                st.image(img, use_container_width=True)
+            else:
+                st.markdown(f"<div style='font-size:48px;text-align:center'>{emoji}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align:center'><b>{name}</b><br/>× {cnt}</div>", unsafe_allow_html=True)
+        i += 1
 
-# ---------- Sidebar (settings for a new game) ----------
+def inventory_quick_row():
+    counts = inventory_counts()
+    if not counts:
+        st.caption("No blocks yet.")
+        return
+    items = []
+    for name, cnt in sorted(counts.items()):
+        _, emoji = get_block_visual(name)
+        items.append(f"{emoji}×{cnt}")
+    st.write(" ".join(items))
+
+# ========== Sidebar ==========
 with st.sidebar:
     st.header("⚙️ Settings")
     num_q = st.slider("Number of questions", 5, 20, 10, 1)
@@ -115,17 +160,17 @@ with st.sidebar:
 
     st.divider()
     st.subheader("🎒 Inventory")
-    inventory_display(compact=False)
+    inventory_gallery()
 
-# ---------- Initialize state ----------
+# ========== Init ==========
 if "questions" not in st.session_state:
     reset_game()
 
-# ---------- Header ----------
+# ========== Header ==========
 st.title("🧮 Kids Math Trainer")
-st.caption("You have **3 attempts** for each question. Collect a **Minecraft-style block** with every correct answer! There are **10 exercises by default** (change in the sidebar).")
+st.caption("You have **3 attempts** per question. Answer correctly to collect a **Minecraft-style block** image! Default: **10 questions** (change in the sidebar).")
 
-# ---------- Finished Screen ----------
+# ========== Finished Screen ==========
 if st.session_state.finished:
     total = len(st.session_state.questions)
     st.success(f"All done! Score: **{st.session_state.score} / {total}** 🎉")
@@ -134,10 +179,9 @@ if st.session_state.finished:
     if percent == 100:
         st.balloons()
 
-    # Summary: inventory and Q&A
     st.divider()
     st.subheader("🎒 Your Block Collection")
-    inventory_display(compact=False)
+    inventory_gallery()
 
     with st.expander("See all questions and answers"):
         rows = []
@@ -148,21 +192,20 @@ if st.session_state.finished:
     st.button("Play again", on_click=reset_game, type="primary")
     st.stop()
 
-# ---------- Current Question ----------
+# ========== Current Question ==========
 idx = st.session_state.idx
 total = len(st.session_state.questions)
 q = st.session_state.questions[idx]
 st.write(f"**Question {idx + 1} of {total}**")
-st.progress((idx) / total)
+st.progress(idx / total)
 
-# Quick compact inventory view under progress
 with st.expander("Quick view: your blocks so far", expanded=False):
-    inventory_display(compact=True)
+    inventory_quick_row()
 
 st.markdown(f"### {q['text']}")
 st.caption(f"Attempts left: **{st.session_state.attempts_left}**")
 
-# ---------- Answer Form ----------
+# ========== Answer Form ==========
 with st.form("answer_form", clear_on_submit=False):
     ans = st.number_input(
         "Your answer",
@@ -175,10 +218,14 @@ if submitted and not st.session_state.question_done:
     st.session_state.user_answer = int(ans)
     if int(ans) == q["answer"]:
         st.session_state.score += 1
-        # Award a block on correct answer
-        block = award_block()
-        st.toast(f"You earned a {block['emoji']} **{block['name']}** block!", icon="✅")
-        st.session_state.feedback = f"✅ Correct! You got a {block['emoji']} **{block['name']}** block!"
+        won = award_block()
+        img, emoji = get_block_visual(won)
+        if img is not None:
+            st.toast(f"You earned a {won} block!", icon="✅")
+            st.image(img, caption=f"You earned: {won}", use_container_width=True)
+        else:
+            st.toast(f"You earned a {emoji} {won} block!", icon="✅")
+        st.session_state.feedback = f"✅ Correct! You got a **{won}** block!"
         st.session_state.question_done = True
         st.session_state.last_correct = True
     else:
@@ -191,7 +238,7 @@ if submitted and not st.session_state.question_done:
             st.session_state.question_done = True
             st.session_state.last_correct = False
 
-# ---------- Feedback & Navigation ----------
+# ========== Feedback & Navigation ==========
 if st.session_state.feedback:
     if st.session_state.question_done:
         st.info(st.session_state.feedback)
@@ -217,4 +264,4 @@ with col2:
         st.rerun()
 
 st.write("")
-st.caption("Tip: Customize question count and number range in the sidebar, then press **Start new game**.")
+st.caption("Tip: Put PNGs in **assets/blocks/** using the listed filenames. Missing images will show emojis instead.")
