@@ -1,4 +1,5 @@
 import random
+import json
 from collections import Counter
 from pathlib import Path
 
@@ -6,12 +7,11 @@ import streamlit as st
 from PIL import Image
 
 # -------------------- App setup --------------------
-st.set_page_config(page_title="Gui Gui Math Trainer", page_icon="🧮", layout="centered")
+st.set_page_config(page_title="Gui Gui Math Trainer + Builder", page_icon="🧮", layout="centered")
 
 # -------------------- Assets & Blocks --------------------
 ASSET_DIR = Path("assets/blocks")
 
-# Available blocks (put PNGs in assets/blocks/). Weights make rare blocks rarer.
 BLOCKS = [
     {"name": "Grass",        "emoji": "🟩", "file": "grass.png",         "weight": 8},
     {"name": "Dirt",         "emoji": "🟫", "file": "dirt.png",          "weight": 8},
@@ -48,7 +48,6 @@ def load_block_images():
 BLOCK_IMAGES = load_block_images()
 
 def get_block_visual(name):
-    """Return (image or None, emoji) for a block name."""
     img = BLOCK_IMAGES.get(name)
     emoji = next(b["emoji"] for b in BLOCKS if b["name"] == name)
     return img, emoji
@@ -105,7 +104,8 @@ def reset_game(num_q=10, min_n=0, max_n=12, ops=None):
     st.session_state.question_done = False
     st.session_state.last_correct = None
     st.session_state.user_answer = None
-    st.session_state.inventory = []  # collected blocks
+    st.session_state.inventory = st.session_state.get("inventory", [])  # keep previous blocks unless starting new run
+    st.session_state.inventory = [] if st.session_state.get("force_new_inventory") else st.session_state.inventory
 
 def award_block():
     names = [b["name"] for b in BLOCKS]
@@ -115,183 +115,326 @@ def award_block():
     return choice
 
 def inventory_counts():
-    # Robust against missing key
     return Counter(st.session_state.get("inventory", []))
 
-def inventory_gallery():
-    counts = inventory_counts()
-    if not counts:
-        st.caption("No blocks yet — answer correctly to collect some! ⛏️")
-        return
-    cols = st.columns(5)
-    i = 0
-    for name, cnt in sorted(counts.items()):
-        img, emoji = get_block_visual(name)
-        with cols[i % len(cols)]:
-            if img is not None:
-                st.image(img, use_container_width=True)
+# ----- Builder helpers -----
+def init_builder(rows=8, cols=12):
+    if "builder" not in st.session_state:
+        st.session_state.builder = {
+            "rows": rows,
+            "cols": cols,
+            "grid": [[None for _ in range(cols)] for _ in range(rows)],
+        }
+
+def builder_used_counts():
+    used = Counter()
+    b = st.session_state.get("builder")
+    if not b:
+        return used
+    for r in range(b["rows"]):
+        for c in range(b["cols"]):
+            name = b["grid"][r][c]
+            if name:
+                used[name] += 1
+    return used
+
+def remaining_counts():
+    inv = inventory_counts()
+    used = builder_used_counts()
+    rem = Counter(inv)
+    for k, v in used.items():
+        rem[k] -= v
+    # remove non-positive
+    for k in list(rem.keys()):
+        if rem[k] <= 0:
+            del rem[k]
+    return rem
+
+def place_block(r, c, name):
+    b = st.session_state.builder
+    # refund currently placed block in that cell
+    cur = b["grid"][r][c]
+    rem = remaining_counts()
+    if name is None:
+        b["grid"][r][c] = None
+        return True
+    # only place if we still have remaining of that block or if replacing same type (no net change)
+    if rem.get(name, 0) > 0 or cur == name:
+        b["grid"][r][c] = name
+        return True
+    return False
+
+def grid_as_emojis():
+    b = st.session_state.builder
+    rows = []
+    for r in range(b["rows"]):
+        row = []
+        for c in range(b["cols"]):
+            name = b["grid"][r][c]
+            if name is None:
+                row.append("⬜")
             else:
-                st.markdown(
-                    "<div style='font-size:48px;text-align:center'>{}</div>".format(emoji),
-                    unsafe_allow_html=True,
-                )
-            st.markdown(
-                "<div style='text-align:center'><b>{}</b><br/>× {}</div>".format(name, cnt),
-                unsafe_allow_html=True,
-            )
-        i += 1
+                _, emoji = get_block_visual(name)
+                row.append(emoji)
+        rows.append(row)
+    return rows
 
-def inventory_quick_row():
-    counts = inventory_counts()
-    if not counts:
-        st.caption("No blocks yet.")
-        return
-    items = []
-    for name, cnt in sorted(counts.items()):
-        _, emoji = get_block_visual(name)
-        items.append(f"{emoji}×{cnt}")
-    st.write(" ".join(items))
+def export_layout():
+    b = st.session_state.builder
+    return {
+        "rows": b["rows"],
+        "cols": b["cols"],
+        "grid": b["grid"],
+    }
 
-# -------------------- Initialize state BEFORE sidebar --------------------
+def import_layout(data: dict):
+    rows = int(data.get("rows", 8))
+    cols = int(data.get("cols", 12))
+    grid = data.get("grid", [[None]*cols for _ in range(rows)])
+    st.session_state.builder = {"rows": rows, "cols": cols, "grid": grid}
+
+# -------------------- Initialize state BEFORE UI --------------------
 if "questions" not in st.session_state:
     reset_game()
 
-# -------------------- Sidebar --------------------
-with st.sidebar:
-    st.header("⚙️ Settings")
-    num_q = st.slider("Number of questions", 5, 20, 10, 1)
-    max_n = st.slider("Largest number", 5, 1000, 12, 1)
-    include_add = st.checkbox("Addition (+)", True)
-    include_sub = st.checkbox("Subtraction (−)", True)
-    include_mul = st.checkbox("Multiplication (×)", True)
-    include_div = st.checkbox("Division (÷)", True)
+init_builder()  # ensure builder exists
 
-    chosen_ops = []
-    if include_add:
-        chosen_ops.append("+")
-    if include_sub:
-        chosen_ops.append("−")
-    if include_mul:
-        chosen_ops.append("×")
-    if include_div:
-        chosen_ops.append("÷")
+# -------------------- Tabs --------------------
+tab_practice, tab_builder = st.tabs(["🧮 Practice", "🧱 Builder"])
 
-    if not chosen_ops:
-        st.warning("Select at least one operation to include.")
+# ==================== PRACTICE TAB ====================
+with tab_practice:
+    # Sidebar for practice settings
+    with st.sidebar:
+        st.header("⚙️ Practice Settings")
+        num_q = st.slider("Number of questions", 5, 20, 10, 1, key="pq_num_q")
+        max_n = st.slider("Largest number", 5, 1000, 12, 1, key="pq_max_n")
+        include_add = st.checkbox("Addition (+)", True, key="pq_add")
+        include_sub = st.checkbox("Subtraction (−)", True, key="pq_sub")
+        include_mul = st.checkbox("Multiplication (×)", True, key="pq_mul")
+        include_div = st.checkbox("Division (÷)", True, key="pq_div")
 
-    if st.button("🔄 Start new game", type="primary", use_container_width=True, disabled=not chosen_ops):
-        reset_game(num_q=num_q, min_n=0, max_n=max_n, ops=chosen_ops)
+        chosen_ops = []
+        if include_add: chosen_ops.append("+")
+        if include_sub: chosen_ops.append("−")
+        if include_mul: chosen_ops.append("×")
+        if include_div: chosen_ops.append("÷")
 
-    st.divider()
-    st.subheader("🎒 Inventory")
-    inventory_gallery()
+        if not chosen_ops:
+            st.warning("Select at least one operation to include.")
 
-# -------------------- Header --------------------
-st.title("🧮 Gui Gui  Kids Math Trainer")
-st.caption(
-    "You have **3 attempts** per question. Answer correctly to collect a **Minecraft-style block** image! "
-    "Default: **10 questions** (change in the sidebar)."
-)
+        colA, colB = st.columns(2)
+        with colA:
+            if st.button("🔄 Start new game", type="primary", use_container_width=True, disabled=not chosen_ops):
+                st.session_state.force_new_inventory = False  # keep blocks
+                reset_game(num_q=num_q, min_n=0, max_n=max_n, ops=chosen_ops)
+                st.rerun()
+        with colB:
+            if st.button("🧹 New game & clear blocks", use_container_width=True):
+                st.session_state.force_new_inventory = True  # reset blocks
+                reset_game(num_q=num_q, min_n=0, max_n=max_n, ops=chosen_ops)
+                st.rerun()
 
-# -------------------- Finished screen --------------------
-if st.session_state.finished:
+        st.divider()
+        st.subheader("🎒 Inventory (earned blocks)")
+        inv = inventory_counts()
+        if inv:
+            lines = []
+            for name, cnt in sorted(inv.items()):
+                _, emoji = get_block_visual(name)
+                lines.append(f"- {emoji} **{name}** × **{cnt}**")
+            st.markdown("\n".join(lines))
+        else:
+            st.caption("No blocks yet — answer correctly to collect some! ⛏️")
+
+    # Header
+    st.title("🧮 Kids Math Trainer")
+    st.caption("You have **3 attempts** per question. Answer correctly to collect block rewards. Numbers can go up to **1000** (see sidebar).")
+
+    # Finished screen
+    if st.session_state.finished:
+        total = len(st.session_state.questions)
+        st.success(f"All done! Score: **{st.session_state.score} / {total}** 🎉")
+        percent = int(round(100 * st.session_state.score / total))
+        st.progress(percent / 100)
+        if percent == 100:
+            st.balloons()
+
+        with st.expander("See all questions and answers"):
+            rows = []
+            for q in st.session_state.questions:
+                rows.append(f"{q['text'].replace('= ?', '= ' + str(q['answer']))}")
+            st.markdown("\n".join([f"- {r}" for r in rows]))
+
+        st.stop()
+
+    # Current question
+    idx = st.session_state.idx
     total = len(st.session_state.questions)
-    st.success(f"All done! Score: **{st.session_state.score} / {total}** 🎉")
-    percent = int(round(100 * st.session_state.score / total))
-    st.progress(percent / 100)
-    if percent == 100:
-        st.balloons()
+    q = st.session_state.questions[idx]
+    st.write(f"**Question {idx + 1} of {total}**")
+    st.progress(idx / total)
 
-    st.divider()
-    st.subheader("🎒 Your Block Collection")
-    inventory_gallery()
+    st.markdown(f"### {q['text']}")
+    st.caption(f"Attempts left: **{st.session_state.attempts_left}**")
 
-    with st.expander("See all questions and answers"):
-        rows = []
-        for q in st.session_state.questions:
-            rows.append(f"{q['text'].replace('= ?', '= ' + str(q['answer']))}")
-        st.markdown("\n".join([f"- {r}" for r in rows]))
+    # Answer form
+    with st.form("answer_form", clear_on_submit=False):
+        ans = st.number_input(
+            "Your answer",
+            value=st.session_state.user_answer if st.session_state.user_answer is not None else 0,
+            step=1,
+            format="%d",
+        )
+        submitted = st.form_submit_button("Check")
 
-    st.button("Play again", on_click=reset_game, type="primary")
-    st.stop()
-
-# -------------------- Current question --------------------
-idx = st.session_state.idx
-total = len(st.session_state.questions)
-q = st.session_state.questions[idx]
-st.write(f"**Question {idx + 1} of {total}**")
-st.progress(idx / total)
-
-with st.expander("Quick view: your blocks so far", expanded=False):
-    inventory_quick_row()
-
-st.markdown(f"### {q['text']}")
-st.caption(f"Attempts left: **{st.session_state.attempts_left}**")
-
-# -------------------- Answer form --------------------
-with st.form("answer_form", clear_on_submit=False):
-    ans = st.number_input(
-        "Your answer",
-        value=st.session_state.user_answer if st.session_state.user_answer is not None else 0,
-        step=1,
-        format="%d",
-    )
-    submitted = st.form_submit_button("Check")
-
-if submitted and not st.session_state.question_done:
-    st.session_state.user_answer = int(ans)
-    if int(ans) == q["answer"]:
-        st.session_state.score += 1
-        won = award_block()
-        img, emoji = get_block_visual(won)
-        if img is not None:
-            st.toast(f"You earned a {won} block!", icon="✅")
-            st.image(img, caption=f"You earned: {won}", use_container_width=True)
-        else:
-            st.toast(f"You earned a {emoji} {won} block!", icon="✅")
-        st.session_state.feedback = f"✅ Correct! You got a **{won}** block!"
-        st.session_state.question_done = True
-        st.session_state.last_correct = True
-    else:
-        st.session_state.attempts_left -= 1
-        if st.session_state.attempts_left > 0:
-            st.session_state.feedback = (
-                f"❌ Not quite. Try again! Attempts left: {st.session_state.attempts_left}"
-            )
-            st.session_state.last_correct = False
-        else:
-            st.session_state.feedback = (
-                f"❌ Out of attempts. The correct answer was **{q['answer']}**."
-            )
+    if submitted and not st.session_state.question_done:
+        st.session_state.user_answer = int(ans)
+        if int(ans) == q["answer"]:
+            st.session_state.score += 1
+            won = award_block()
+            img, emoji = get_block_visual(won)
+            if img is not None:
+                st.toast(f"You earned a {won} block!", icon="✅")
+            else:
+                st.toast(f"You earned a {emoji} {won} block!", icon="✅")
+            st.session_state.feedback = f"✅ Correct! You got a **{won}** block!"
             st.session_state.question_done = True
-            st.session_state.last_correct = False
+            st.session_state.last_correct = True
+        else:
+            st.session_state.attempts_left -= 1
+            if st.session_state.attempts_left > 0:
+                st.session_state.feedback = (
+                    f"❌ Not quite. Try again! Attempts left: {st.session_state.attempts_left}"
+                )
+                st.session_state.last_correct = False
+            else:
+                st.session_state.feedback = (
+                    f"❌ Out of attempts. The correct answer was **{q['answer']}**."
+                )
+                st.session_state.question_done = True
+                st.session_state.last_correct = False
 
-# -------------------- Feedback & navigation --------------------
-if st.session_state.feedback:
-    if st.session_state.question_done:
-        st.info(st.session_state.feedback)
-    else:
-        st.warning(st.session_state.feedback)
+    if st.session_state.feedback:
+        if st.session_state.question_done:
+            st.info(st.session_state.feedback)
+        else:
+            st.warning(st.session_state.feedback)
 
-col1, col2 = st.columns(2)
-with col1:
-    if st.session_state.question_done:
-        if st.button("➡️ Next question", type="primary", use_container_width=True):
-            st.session_state.idx += 1
-            st.session_state.attempts_left = 3
-            st.session_state.feedback = ""
-            st.session_state.question_done = False
-            st.session_state.last_correct = None
-            st.session_state.user_answer = None
-            if st.session_state.idx >= len(st.session_state.questions):
-                st.session_state.finished = True
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.session_state.question_done:
+            if st.button("➡️ Next question", type="primary", use_container_width=True):
+                st.session_state.idx += 1
+                st.session_state.attempts_left = 3
+                st.session_state.feedback = ""
+                st.session_state.question_done = False
+                st.session_state.last_correct = None
+                st.session_state.user_answer = None
+                if st.session_state.idx >= len(st.session_state.questions):
+                    st.session_state.finished = True
+                st.rerun()
+    with col2:
+        if st.button("🔁 Restart practice (keep blocks)", use_container_width=True):
+            st.session_state.force_new_inventory = False
+            reset_game(num_q=st.session_state.get("pq_num_q", 10),
+                       min_n=0,
+                       max_n=st.session_state.get("pq_max_n", 12),
+                       ops=[o for o in ["+","−","×","÷"]
+                            if st.session_state.get("pq_add", True) and o=="+" or
+                               st.session_state.get("pq_sub", True) and o=="−" or
+                               st.session_state.get("pq_mul", True) and o=="×" or
+                               st.session_state.get("pq_div", True) and o=="÷"])
             st.rerun()
-with col2:
-    if st.button("🔁 Restart game", use_container_width=True):
-        reset_game()
-        st.rerun()
 
-st.write("")
-st.caption(
-    "Tip: Put PNGs in **assets/blocks/** using the listed filenames. Missing images will show emojis instead."
-)
+# ==================== BUILDER TAB ====================
+with tab_builder:
+    st.title("🧱 Block Builder (mini Minecraft-like)")
+    st.caption("Place blocks on a grid using only what you've earned in Practice. Save or load your world.")
+
+    # Sidebar for builder settings
+    with st.sidebar:
+        st.header("⚙️ Builder Settings")
+        rows = st.slider("Rows", 4, 20, st.session_state.builder["rows"])
+        cols = st.slider("Columns", 4, 30, st.session_state.builder["cols"])
+        if (rows != st.session_state.builder["rows"]) or (cols != st.session_state.builder["cols"]):
+            # Resize grid while keeping existing layout
+            old = st.session_state.builder
+            new_grid = [[None for _ in range(cols)] for _ in range(rows)]
+            for r in range(min(rows, old["rows"])):
+                for c in range(min(cols, old["cols"])):
+                    new_grid[r][c] = old["grid"][r][c]
+            st.session_state.builder = {"rows": rows, "cols": cols, "grid": new_grid}
+
+        st.divider()
+        st.subheader("🎒 Blocks Available")
+        rem = remaining_counts()
+        if rem:
+            lines = []
+            for name in sorted(rem.keys()):
+                _, emoji = get_block_visual(name)
+                lines.append(f"- {emoji} **{name}** × **{rem[name]}**")
+            st.markdown("\n".join(lines))
+        else:
+            st.caption("No remaining blocks to place. Earn more in Practice!")
+
+        st.divider()
+        # Save layout
+        save_data = json.dumps(export_layout(), ensure_ascii=False, indent=2)
+        st.download_button("💾 Download world (JSON)", data=save_data, file_name="world.json", mime="application/json")
+
+        # Load layout
+        up = st.file_uploader("📤 Load world (JSON)", type=["json"])
+        if up is not None:
+            try:
+                imported = json.loads(up.read().decode("utf-8"))
+                import_layout(imported)
+                st.success("World loaded!")
+            except Exception as e:
+                st.error(f"Could not load world: {e}")
+
+        if st.button("🧹 Clear world"):
+            r = st.session_state.builder["rows"]
+            c = st.session_state.builder["cols"]
+            st.session_state.builder["grid"] = [[None for _ in range(c)] for _ in range(r)]
+
+    # Controls
+    colL, colR = st.columns([1, 2], vertical_alignment="top")
+
+    with colL:
+        st.subheader("Controls")
+        # Choose a block to place
+        rem = remaining_counts()
+        all_names = [b["name"] for b in BLOCKS]
+        # Options show only blocks you can place now (remaining>0)
+        placeable = [n for n in all_names if rem.get(n, 0) > 0]
+        selected_block = st.selectbox("Block to place", placeable, index=0 if placeable else None, placeholder="No blocks available")
+
+        r = st.number_input("Row", min_value=0, max_value=st.session_state.builder["rows"] - 1, step=1, value=0)
+        c = st.number_input("Column", min_value=0, max_value=st.session_state.builder["cols"] - 1, step=1, value=0)
+
+        btn_cols = st.columns(2)
+        with btn_cols[0]:
+            if st.button("Place", type="primary", use_container_width=True, disabled=selected_block is None):
+                ok = place_block(int(r), int(c), selected_block if selected_block else None)
+                if not ok:
+                    st.warning("No remaining blocks of that type. Earn more in Practice.")
+        with btn_cols[1]:
+            if st.button("Remove", use_container_width=True):
+                place_block(int(r), int(c), None)
+
+        st.caption("Tip: The Builder only lets you place blocks you still have remaining (earned minus already placed).")
+
+    with colR:
+        st.subheader("World Preview")
+        # Show as emoji grid (simple & fast). Each rerun reflects changes.
+        grid = grid_as_emojis()
+        # Render as rows of emojis
+        for row in grid:
+            st.markdown("".join(row))
+
+        # Optional: small legend for selected block
+        if selected_block:
+            img, emoji = get_block_visual(selected_block)
+            st.caption(f"Selected: {emoji} {selected_block}")
+
