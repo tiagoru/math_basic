@@ -187,7 +187,7 @@ with st.sidebar:
     inventory_gallery()
 
 # -------------------- Header --------------------
-st.title("🧮 Kids Math Trainer")
+st.title("🧮 Gui Gui  Kids Math Trainer")
 st.caption(
     "You have **3 attempts** per question. Answer correctly to collect a **Minecraft-style block** image! "
     "Default: **10 questions** (change in the sidebar)."
