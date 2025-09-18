@@ -46,12 +46,6 @@ def load_block_images():
 
 BLOCK_IMAGES = load_block_images()
 
-def has_texture(name: str) -> bool:
-    return BLOCK_IMAGES.get(name) is not None
-
-def block_color(name: str) -> str:
-    return next(b["color"] for b in BLOCKS if b["name"] == name)
-
 def get_block_emoji(name: str) -> str:
     return next(b["emoji"] for b in BLOCKS if b["name"] == name)
 
@@ -96,7 +90,6 @@ def reset_game(num_q=10, min_n=0, max_n=12, ops=None):
     st.session_state.finished = False
     st.session_state.feedback = ""
     st.session_state.question_done = False
-    st.session_state.last_correct = None
     st.session_state.user_answer = None
     if "inventory" not in st.session_state:
         st.session_state.inventory = []  # list of block names earned
@@ -111,13 +104,13 @@ def award_block():
 def inventory_counts() -> Counter:
     return Counter(st.session_state.get("inventory", []))
 
-# -------------------- 3D builder component (no f-string; placeholders) --------------------
-def render_voxel_builder(inventory: Counter, world=None, grid_size=20, cell=1.0, free_build: bool=False):
+# -------------------- 3D builder component (UMD + base64, no f-strings) --------------------
+def render_voxel_builder(inventory: Counter, world=None, grid_size=24, cell=1.0, free_build: bool=False):
     """
-    3D voxel editor that works in Streamlit Cloud iframes:
-      • Loads Three.js via non-module scripts (UMD).
-      • Embeds block textures as data URIs (no relative asset fetch).
-      • Optional free_build ignores inventory (good for demo/testing).
+    Works in Streamlit Cloud iframes:
+      • Three.js UMD scripts (no module/CSP issues)
+      • Base64-embedded textures (no relative fetches)
+      • Free-build option ignores inventory
     """
     import base64, io, json
     import streamlit.components.v1 as components
@@ -133,7 +126,7 @@ def render_voxel_builder(inventory: Counter, world=None, grid_size=20, cell=1.0,
         b64 = base64.b64encode(buf.getvalue()).decode("ascii")
         return f"data:image/png;base64,{b64}"
 
-    textures = {n: img_data_uri(n) for n in names}   # data URIs or None
+    textures = {n: img_data_uri(n) for n in names}
     colors   = {b["name"]: b["color"] for b in BLOCKS}
     emojis   = {b["name"]: b["emoji"] for b in BLOCKS}
     inv_map  = {k: int(v) for k, v in inventory.items()}
@@ -175,7 +168,6 @@ def render_voxel_builder(inventory: Counter, world=None, grid_size=20, cell=1.0,
 </div>
 <div id="msg">Loading 3D…</div>
 
-<!-- Non-module (UMD) builds to avoid iframe module/CSP issues -->
 <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/controls/OrbitControls.js"></script>
 
@@ -183,7 +175,7 @@ def render_voxel_builder(inventory: Counter, world=None, grid_size=20, cell=1.0,
 (function() {
   if (!window.THREE || !THREE.OrbitControls) {
     document.body.innerHTML =
-      '<div style="color:#fff;font-family:system-ui;padding:16px">⚠️ Failed to load Three.js. Try reloading. If you are offline, enable Free build or allow CDN.</div>';
+      '<div style="color:#fff;font-family:system-ui;padding:16px">⚠️ Failed to load Three.js. Try reloading or check network/CDN.</div>';
     return;
   }
 
@@ -318,7 +310,6 @@ def render_voxel_builder(inventory: Counter, world=None, grid_size=20, cell=1.0,
       "Left click: place • Shift/Right click: remove • Drag: orbit • Scroll: zoom";
   }
 
-  // Initial UI
   refreshUI();
 
   // Load world (doesn’t charge inventory)
@@ -419,7 +410,6 @@ def render_voxel_builder(inventory: Counter, world=None, grid_size=20, cell=1.0,
 </body>
 </html>
 """
-    # Replace placeholders
     import json as _json
     html = (html_template
             .replace("__GRID_SIZE__", str(grid_size))
@@ -459,9 +449,6 @@ with tab_practice:
         if include_mul: ops.append("×")
         if include_div: ops.append("÷")
 
-        if not ops:
-            st.warning("Select at least one operation to include.")
-
         if st.button("🔄 Start new game", type="primary", use_container_width=True, disabled=not ops):
             reset_game(num_q=n_questions, min_n=0, max_n=max_n, ops=ops)
             st.rerun()
@@ -478,8 +465,8 @@ with tab_practice:
     st.title("🧮 Kids Math Trainer")
     st.caption("3 attempts per question. Correct answers award blocks. Number range up to 1000 (see sidebar).")
 
-    # Finished screen
     if st.session_state.finished:
+        # Results screen (no st.stop!)
         n_total = len(st.session_state.questions)
         st.success(f"All done! Score: **{st.session_state.score} / {n_total}** 🎉")
         pct = int(round(100 * st.session_state.score / max(n_total, 1)))
@@ -488,72 +475,72 @@ with tab_practice:
         with st.expander("See all questions and answers"):
             rows = [f"{q['text'].replace('= ?', '= ' + str(q['answer']))}" for q in st.session_state.questions]
             st.markdown("\n".join(f"- {r}" for r in rows))
-        st.stop()
+        st.info("Switch to the **3D Builder** tab to build with your blocks!")
+    else:
+        # Current question flow
+        idx = int(st.session_state.idx)
+        n_total = len(st.session_state.questions)
+        if idx >= n_total:
+            st.session_state.finished = True
+            st.experimental_rerun()
 
-    # Current question
-    idx = int(st.session_state.idx)
-    n_total = len(st.session_state.questions)
-    if idx >= n_total:
-        st.session_state.finished = True
-        st.rerun()
+        q = st.session_state.questions[idx]
+        st.write(f"**Question {idx + 1} of {n_total}**")
+        st.progress(idx / max(n_total, 1))
 
-    q = st.session_state.questions[idx]
-    st.write(f"**Question {idx + 1} of {n_total}**")
-    st.progress(idx / max(n_total, 1))
+        st.markdown(f"### {q['text']}")
+        st.caption(f"Attempts left: **{st.session_state.attempts_left}**")
 
-    st.markdown(f"### {q['text']}")
-    st.caption(f"Attempts left: **{st.session_state.attempts_left}**")
+        with st.form("answer_form", clear_on_submit=False):
+            ans = st.number_input(
+                "Your answer",
+                value=st.session_state.user_answer if st.session_state.user_answer is not None else 0,
+                step=1, format="%d"
+            )
+            submitted = st.form_submit_button("Check")
 
-    with st.form("answer_form", clear_on_submit=False):
-        ans = st.number_input(
-            "Your answer",
-            value=st.session_state.user_answer if st.session_state.user_answer is not None else 0,
-            step=1, format="%d"
-        )
-        submitted = st.form_submit_button("Check")
-
-    if submitted and not st.session_state.question_done:
-        st.session_state.user_answer = int(ans)
-        if int(ans) == q["answer"]:
-            st.session_state.score += 1
-            won = award_block()
-            st.toast(f"You earned a {get_block_emoji(won)} {won} block!", icon="✅")
-            st.session_state.feedback = f"✅ Correct! You got a **{won}** block!"
-            st.session_state.question_done = True
-        else:
-            st.session_state.attempts_left -= 1
-            if st.session_state.attempts_left > 0:
-                st.session_state.feedback = f"❌ Not quite. Try again! Attempts left: {st.session_state.attempts_left}"
-            else:
-                st.session_state.feedback = f"❌ Out of attempts. The correct answer was **{q['answer']}**."
+        if submitted and not st.session_state.question_done:
+            st.session_state.user_answer = int(ans)
+            if int(ans) == q["answer"]:
+                st.session_state.score += 1
+                won = award_block()
+                st.toast(f"You earned a {get_block_emoji(won)} {won} block!", icon="✅")
+                st.session_state.feedback = f"✅ Correct! You got a **{won}** block!"
                 st.session_state.question_done = True
+            else:
+                st.session_state.attempts_left -= 1
+                if st.session_state.attempts_left > 0:
+                    st.session_state.feedback = f"❌ Not quite. Try again! Attempts left: {st.session_state.attempts_left}"
+                else:
+                    st.session_state.feedback = f"❌ Out of attempts. The correct answer was **{q['answer']}**."
+                    st.session_state.question_done = True
 
-    if st.session_state.feedback:
-        (st.info if st.session_state.question_done else st.warning)(st.session_state.feedback)
+        if st.session_state.feedback:
+            (st.info if st.session_state.question_done else st.warning)(st.session_state.feedback)
 
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.session_state.question_done:
-            if st.button("➡️ Next question", type="primary", use_container_width=True):
-                st.session_state.idx += 1
-                st.session_state.attempts_left = 3
-                st.session_state.feedback = ""
-                st.session_state.question_done = False
-                st.session_state.user_answer = None
-                if st.session_state.idx >= len(st.session_state.questions):
-                    st.session_state.finished = True
-                st.rerun()
-    with c2:
-        if st.button("🔁 Restart practice (keep blocks)", use_container_width=True):
-            reset_game(num_q=st.session_state.get("pq_num_q", 10),
-                       min_n=0,
-                       max_n=st.session_state.get("pq_max_n", 12),
-                       ops=[op for op, on in zip(["+","−","×","÷"],
-                           [st.session_state.get("pq_add",True),
-                            st.session_state.get("pq_sub",True),
-                            st.session_state.get("pq_mul",True),
-                            st.session_state.get("pq_div",True)]) if on])
-            st.rerun()
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.session_state.question_done:
+                if st.button("➡️ Next question", type="primary", use_container_width=True):
+                    st.session_state.idx += 1
+                    st.session_state.attempts_left = 3
+                    st.session_state.feedback = ""
+                    st.session_state.question_done = False
+                    st.session_state.user_answer = None
+                    if st.session_state.idx >= len(st.session_state.questions):
+                        st.session_state.finished = True
+                    st.experimental_rerun()
+        with c2:
+            if st.button("🔁 Restart practice (keep blocks)", use_container_width=True):
+                reset_game(num_q=st.session_state.get("pq_num_q", 10),
+                           min_n=0,
+                           max_n=st.session_state.get("pq_max_n", 12),
+                           ops=[op for op, on in zip(["+","−","×","÷"],
+                               [st.session_state.get("pq_add",True),
+                                st.session_state.get("pq_sub",True),
+                                st.session_state.get("pq_mul",True),
+                                st.session_state.get("pq_div",True)]) if on])
+                st.experimental_rerun()
 
 # ==================== 3D BUILDER TAB ====================
 with tab_builder3d:
@@ -564,7 +551,7 @@ with tab_builder3d:
     with c1:
         if st.button("➕ Grant starter blocks (Stone×10, Grass×5)"):
             st.session_state.inventory += ["Stone"]*10 + ["Grass"]*5
-            st.rerun()
+            st.experimental_rerun()
     with c2:
         free_build = st.checkbox("Free build mode (ignore inventory)", value=False)
 
