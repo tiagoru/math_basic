@@ -160,7 +160,7 @@ if "questions" not in st.session_state:
 with st.sidebar:
     st.header("⚙️ Settings")
     num_q = st.slider("Number of questions", 5, 20, 10, 1)
-    max_n = st.slider("Largest number", 5, 20, 12, 1)
+    max_n = st.slider("Largest number", 5, 1000, 12, 1)
     include_add = st.checkbox("Addition (+)", True)
     include_sub = st.checkbox("Subtraction (−)", True)
     include_mul = st.checkbox("Multiplication (×)", True)
