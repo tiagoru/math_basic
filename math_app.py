@@ -7,23 +7,6 @@ from PIL import Image
 
 # -------------------- App setup --------------------
 st.set_page_config(page_title="Gui Gui Math Trainer + 3D Builder", page_icon="🧮", layout="wide")
-# ==================== 3D BUILDER TAB ====================
-with tab_builder3d:
-    st.title("🧱 3D Builder (voxel world)")
-
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("➕ Grant starter blocks (Stone×10, Grass×5)"):
-            st.session_state.inventory += ["Stone"]*10 + ["Grass"]*5
-            st.rerun()
-    with c2:
-        free_build = st.checkbox("Free build mode (ignore inventory)", value=False)
-
-    inv_counts = inventory_counts()
-    if not inv_counts and not free_build:
-        st.warning("No blocks yet — earn some in Practice or enable Free build.")
-
-    render_voxel_builder(inv_counts, world=None, grid_size=24, cell=1.0, free_build=free_build)
 
 # -------------------- Assets & Blocks --------------------
 ASSET_DIR = Path("assets/blocks")
@@ -65,10 +48,6 @@ BLOCK_IMAGES = load_block_images()
 
 def has_texture(name: str) -> bool:
     return BLOCK_IMAGES.get(name) is not None
-
-def texture_path(name: str) -> str:
-    f = next(b["file"] for b in BLOCKS if b["name"] == name)
-    return str((ASSET_DIR / f).as_posix())
 
 def block_color(name: str) -> str:
     return next(b["color"] for b in BLOCKS if b["name"] == name)
@@ -132,7 +111,7 @@ def award_block():
 def inventory_counts() -> Counter:
     return Counter(st.session_state.get("inventory", []))
 
-# -------------------- 3D builder component --------------------
+# -------------------- 3D builder component (UMD + base64 textures) --------------------
 def render_voxel_builder(inventory: Counter, world=None, grid_size=20, cell=1.0, free_build: bool=False):
     """
     3D voxel editor that works in Streamlit Cloud iframes:
@@ -232,7 +211,7 @@ def render_voxel_builder(inventory: Counter, world=None, grid_size=20, cell=1.0,
   renderer.shadowMap.enabled = true;
   document.body.appendChild(renderer.domElement);
 
-  // prevent the UI panel from eating canvas events
+  // keep UI clicks from triggering canvas handlers
   const ui = document.getElementById("ui");
   ui.addEventListener("pointerdown", e => e.stopPropagation());
   ui.addEventListener("click", e => e.stopPropagation());
@@ -440,5 +419,143 @@ def render_voxel_builder(inventory: Counter, world=None, grid_size=20, cell=1.0,
 </body>
 </html>
 """
+    import streamlit.components.v1 as components
     components.html(html, height=720, scrolling=False)
 
+# -------------------- Initialize state BEFORE UI --------------------
+if "questions" not in st.session_state:
+    reset_game()
+
+# -------------------- Tabs --------------------
+tab_practice, tab_builder3d = st.tabs(["🧮 Practice", "🧱 3D Builder"])
+
+# ==================== PRACTICE TAB ====================
+with tab_practice:
+    with st.sidebar:
+        st.header("⚙️ Practice Settings")
+        n_questions = st.slider("Number of questions", 5, 20, 10, 1, key="pq_num_q")
+        max_n = st.slider("Largest number", 5, 1000, 12, 1, key="pq_max_n")
+        include_add = st.checkbox("Addition (+)", True, key="pq_add")
+        include_sub = st.checkbox("Subtraction (−)", True, key="pq_sub")
+        include_mul = st.checkbox("Multiplication (×)", True, key="pq_mul")
+        include_div = st.checkbox("Division (÷)", True, key="pq_div")
+
+        ops = []
+        if include_add: ops.append("+")
+        if include_sub: ops.append("−")
+        if include_mul: ops.append("×")
+        if include_div: ops.append("÷")
+
+        if not ops:
+            st.warning("Select at least one operation to include.")
+
+        if st.button("🔄 Start new game", type="primary", use_container_width=True, disabled=not ops):
+            reset_game(num_q=n_questions, min_n=0, max_n=max_n, ops=ops)
+            st.rerun()
+
+        st.divider()
+        st.subheader("🎒 Inventory (earned blocks)")
+        inv_counts_sidebar = inventory_counts()
+        if inv_counts_sidebar:
+            for name, cnt in sorted(inv_counts_sidebar.items()):
+                st.write(f"{get_block_emoji(name)} **{name}** × **{cnt}**")
+        else:
+            st.caption("No blocks yet — answer correctly to collect some! ⛏️")
+
+    st.title("🧮 Kids Math Trainer")
+    st.caption("3 attempts per question. Correct answers award blocks. Number range up to 1000 (see sidebar).")
+
+    # Finished screen
+    if st.session_state.finished:
+        n_total = len(st.session_state.questions)
+        st.success(f"All done! Score: **{st.session_state.score} / {n_total}** 🎉")
+        pct = int(round(100 * st.session_state.score / max(n_total, 1)))
+        st.progress(pct / 100)
+        if pct == 100: st.balloons()
+        with st.expander("See all questions and answers"):
+            rows = [f"{q['text'].replace('= ?', '= ' + str(q['answer']))}" for q in st.session_state.questions]
+            st.markdown("\n".join(f"- {r}" for r in rows))
+        st.stop()
+
+    # Current question
+    idx = int(st.session_state.idx)
+    n_total = len(st.session_state.questions)
+    if idx >= n_total:
+        st.session_state.finished = True
+        st.rerun()
+
+    q = st.session_state.questions[idx]
+    st.write(f"**Question {idx + 1} of {n_total}**")
+    st.progress(idx / max(n_total, 1))
+
+    st.markdown(f"### {q['text']}")
+    st.caption(f"Attempts left: **{st.session_state.attempts_left}**")
+
+    with st.form("answer_form", clear_on_submit=False):
+        ans = st.number_input(
+            "Your answer",
+            value=st.session_state.user_answer if st.session_state.user_answer is not None else 0,
+            step=1, format="%d"
+        )
+        submitted = st.form_submit_button("Check")
+
+    if submitted and not st.session_state.question_done:
+        st.session_state.user_answer = int(ans)
+        if int(ans) == q["answer"]:
+            st.session_state.score += 1
+            won = award_block()
+            st.toast(f"You earned a {get_block_emoji(won)} {won} block!", icon="✅")
+            st.session_state.feedback = f"✅ Correct! You got a **{won}** block!"
+            st.session_state.question_done = True
+        else:
+            st.session_state.attempts_left -= 1
+            if st.session_state.attempts_left > 0:
+                st.session_state.feedback = f"❌ Not quite. Try again! Attempts left: {st.session_state.attempts_left}"
+            else:
+                st.session_state.feedback = f"❌ Out of attempts. The correct answer was **{q['answer']}**."
+                st.session_state.question_done = True
+
+    if st.session_state.feedback:
+        (st.info if st.session_state.question_done else st.warning)(st.session_state.feedback)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.session_state.question_done:
+            if st.button("➡️ Next question", type="primary", use_container_width=True):
+                st.session_state.idx += 1
+                st.session_state.attempts_left = 3
+                st.session_state.feedback = ""
+                st.session_state.question_done = False
+                st.session_state.user_answer = None
+                if st.session_state.idx >= len(st.session_state.questions):
+                    st.session_state.finished = True
+                st.rerun()
+    with c2:
+        if st.button("🔁 Restart practice (keep blocks)", use_container_width=True):
+            reset_game(num_q=st.session_state.get("pq_num_q", 10),
+                       min_n=0,
+                       max_n=st.session_state.get("pq_max_n", 12),
+                       ops=[op for op, on in zip(["+","−","×","÷"],
+                           [st.session_state.get("pq_add",True),
+                            st.session_state.get("pq_sub",True),
+                            st.session_state.get("pq_mul",True),
+                            st.session_state.get("pq_div",True)]) if on])
+            st.rerun()
+
+# ==================== 3D BUILDER TAB ====================
+with tab_builder3d:
+    st.title("🧱 3D Builder (voxel world)")
+    st.caption("Use earned blocks to build. Left click: place • Shift/Right click: remove • Drag: orbit • Scroll: zoom.")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("➕ Grant starter blocks (Stone×10, Grass×5)"):
+            st.session_state.inventory += ["Stone"]*10 + ["Grass"]*5
+            st.rerun()
+    with c2:
+        free_build = st.checkbox("Free build mode (ignore inventory)", value=False)
+
+    inv_counts = inventory_counts()
+    if not inv_counts and not free_build:
+        st.warning("No blocks yet — earn some in Practice or enable Free build.")
+    render_voxel_builder(inv_counts, world=None, grid_size=24, cell=1.0, free_build=free_build)
