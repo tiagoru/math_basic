@@ -51,7 +51,6 @@ def has_texture(name):
     return BLOCK_IMAGES.get(name) is not None
 
 def texture_path(name):
-    # Used by the Three.js scene (relative URL)
     f = next(b["file"] for b in BLOCKS if b["name"] == name)
     return str((ASSET_DIR / f).as_posix())
 
@@ -123,17 +122,19 @@ def render_voxel_builder(inventory: Counter, world=None, grid_size=20, cell=1.0)
     3D voxel editor with a robust dropdown:
       • Always shows a dropdown (even if you have 0 blocks).
       • Options with 0 remaining are disabled.
-      • UI z-index is raised so it never hides behind the canvas.
+      • UI sits above the canvas (z-index fix).
     """
     import json as _json
     import streamlit.components.v1 as components
 
     names = [b["name"] for b in BLOCKS]
-    textures = {n: (str((ASSET_DIR / next(b["file"] for b in BLOCKS if b["name"] == n)).as_posix())
-                    if BLOCK_IMAGES.get(n) is not None else None) for n in names}
+    textures = {
+        n: (texture_path(n) if has_texture(n) else None)
+        for n in names
+    }
     colors = {b["name"]: b["color"] for b in BLOCKS}
     emojis = {b["name"]: b["emoji"] for b in BLOCKS}
-    inv_map = {k: int(v) for k, v in inventory.items()}  # only positive counts come in
+    inv_map = {k: int(v) for k, v in inventory.items()}
 
     html = f"""
 <!DOCTYPE html>
@@ -184,7 +185,7 @@ const emojis = {_json.dumps(emojis)};
 let inventory = {_json.dumps(inv_map)};
 let world = {_json.dumps(world if world else {"voxels": []})};
 
-// If you have no blocks yet, still populate dropdown with disabled options
+// If you have no blocks yet, still show the dropdown (disabled options)
 if (Object.keys(inventory).length === 0) {{
   inventory = Object.fromEntries(NAMES.map(n => [n, 0]));
 }}
@@ -211,7 +212,8 @@ gridHelper.rotation.x = Math.PI/2; scene.add(gridHelper);
 const planeGeo = new THREE.PlaneGeometry(GRID_SIZE*2, GRID_SIZE*2); planeGeo.rotateX(-Math.PI/2);
 const plane = new THREE.Mesh(planeGeo, new THREE.MeshBasicMaterial({{ visible:false }})); scene.add(plane);
 
-const raycaster = new THREE.Raycaster(); const mouse = new THREE.Vector2();
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2(); // <-- defined ONCE
 
 const texCache = new Map();
 function makeMaterial(name) {{
@@ -234,7 +236,7 @@ const voxels = new Map(); const voxelData = new Map();
 
 function placeVoxel(x,y,z,name) {{
   const k = key(x,y,z); if (voxels.has(k)) return false;
-  if (!inventory[name] || inventory[name] <= 0) return false; // enforce remaining count
+  if (!inventory[name] || inventory[name] <= 0) return false;
   const mesh = new THREE.Mesh(cubeGeo, makeMaterial(name));
   mesh.castShadow = true; mesh.receiveShadow = true;
   mesh.position.set(x+CELL/2, y+CELL/2, z+CELL/2);
@@ -337,7 +339,6 @@ document.getElementById("loadFile").addEventListener("change", (e) => {{
 }});
 
 // Mouse interaction
-const raycaster = new THREE.Raycaster(); const mouse = new THREE.Vector2();
 function onPointerDown(event) {{
   event.preventDefault();
   const rect = renderer.domElement.getBoundingClientRect();
@@ -393,3 +394,60 @@ animate();
 </html>
 """
     components.html(html, height=720, scrolling=False)
+
+# -------------------- Initialize state BEFORE UI --------------------
+if "questions" not in st.session_state:
+    reset_game()
+
+# -------------------- Tabs --------------------
+tab_practice, tab_builder3d = st.tabs(["🧮 Practice", "🧱 3D Builder"])
+
+# ==================== PRACTICE TAB ====================
+with tab_practice:
+    with st.sidebar:
+        st.header("⚙️ Practice Settings")
+        num_q = st.slider("Number of questions", 5, 20, 10, 1, key="pq_num_q")
+        max_n = st.slider("Largest number", 5, 1000, 12, 1, key="pq_max_n")
+        include_add = st.checkbox("Addition (+)", True, key="pq_add")
+        include_sub = st.checkbox("Subtraction (−)", True, key="pq_sub")
+        include_mul = st.checkbox("Multiplication (×)", True, key="pq_mul")
+        include_div = st.checkbox("Division (÷)", True, key="pq_div")
+
+        ops = []
+        if include_add: ops.append("+")
+        if include_sub: ops.append("−")
+        if include_mul: ops.append("×")
+        if include_div: ops.append("÷")
+
+        if not ops:
+            st.warning("Select at least one operation to include.")
+
+        if st.button("🔄 Start new game", type="primary", use_container_width=True, disabled=not ops):
+            reset_game(num_q=num_q, min_n=0, max_n=max_n, ops=ops)
+            st.rerun()
+
+        st.divider()
+        st.subheader("🎒 Inventory (earned blocks)")
+        inv = inventory_counts()
+        if inv:
+            for name, cnt in sorted(inv.items()):
+                st.write(f"{get_block_emoji(name)} **{name}** × **{cnt}**")
+        else:
+            st.caption("No blocks yet — answer correctly to collect some! ⛏️")
+
+    st.title("🧮 Kids Math Trainer")
+    st.caption("3 attempts per question. Correct answers award blocks. Number range up to 1000 (see sidebar).")
+
+    if st.session_state.finished:
+        total = len(st.session_state.questions)
+        st.success(f"All done! Score: **{st.session_state.score} / {total}** 🎉")
+        percent = int(round(100 * st.session_state.score / total))
+        st.progress(percent / 100)
+        if percent == 100: st.balloons()
+        with st.expander("See all questions and answers"):
+            rows = [f"{q['text'].replace('= ?', '= ' + str(q['answer']))}" for q in st.session_state.questions]
+            st.markdown("\n".join(f"- {r}" for r in rows))
+        st.stop()
+
+    idx = st.session_state.idx
+    total
