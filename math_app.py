@@ -7,6 +7,23 @@ from PIL import Image
 
 # -------------------- App setup --------------------
 st.set_page_config(page_title="Gui Gui Math Trainer + 3D Builder", page_icon="🧮", layout="wide")
+# ==================== 3D BUILDER TAB ====================
+with tab_builder3d:
+    st.title("🧱 3D Builder (voxel world)")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("➕ Grant starter blocks (Stone×10, Grass×5)"):
+            st.session_state.inventory += ["Stone"]*10 + ["Grass"]*5
+            st.rerun()
+    with c2:
+        free_build = st.checkbox("Free build mode (ignore inventory)", value=False)
+
+    inv_counts = inventory_counts()
+    if not inv_counts and not free_build:
+        st.warning("No blocks yet — earn some in Practice or enable Free build.")
+
+    render_voxel_builder(inv_counts, world=None, grid_size=24, cell=1.0, free_build=free_build)
 
 # -------------------- Assets & Blocks --------------------
 ASSET_DIR = Path("assets/blocks")
