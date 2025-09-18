@@ -111,7 +111,7 @@ def award_block():
 def inventory_counts() -> Counter:
     return Counter(st.session_state.get("inventory", []))
 
-# -------------------- 3D builder component (UMD + base64 textures) --------------------
+# -------------------- 3D builder component (no f-string; placeholders) --------------------
 def render_voxel_builder(inventory: Counter, world=None, grid_size=20, cell=1.0, free_build: bool=False):
     """
     3D voxel editor that works in Streamlit Cloud iframes:
@@ -139,29 +139,29 @@ def render_voxel_builder(inventory: Counter, world=None, grid_size=20, cell=1.0,
     inv_map  = {k: int(v) for k, v in inventory.items()}
     world    = world if world else {"voxels": []}
 
-    html = f"""
+    html_template = """
 <!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8" />
 <title>3D Builder</title>
 <style>
-  html, body {{ margin:0; padding:0; height:100%; overflow:hidden; background:#111; }}
-  #ui {{
+  html, body { margin:0; padding:0; height:100%; overflow:hidden; background:#111; }
+  #ui {
     position: fixed; top: 10px; right: 10px; z-index: 9999;
     background: rgba(0,0,0,0.6); color: #fff; padding: 8px 10px; border-radius: 8px;
     font-family: system-ui, sans-serif; font-size: 14px; width: 260px; pointer-events: auto;
-  }}
-  #ui select, #ui button, #ui input[type=file] {{
+  }
+  #ui select, #ui button, #ui input[type=file] {
     margin: 4px 0; width: 100%; background:#222; color:#fff; border:1px solid #444; border-radius:6px; padding:6px;
-  }}
-  #inv {{ margin-top:6px; max-height: 160px; overflow:auto; }}
-  #inv div {{ display:flex; justify-content:space-between; }}
-  #msg {{
+  }
+  #inv { margin-top:6px; max-height: 160px; overflow:auto; }
+  #inv div { display:flex; justify-content:space-between; }
+  #msg {
     position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%);
     color:#fff; background:rgba(0,0,0,0.4); padding:6px 10px; border-radius:6px; font-family: system-ui, sans-serif;
-  }}
-  canvas {{ display:block; position:absolute; top:0; left:0; z-index:1; }}
+  }
+  canvas { display:block; position:absolute; top:0; left:0; z-index:1; }
 </style>
 </head>
 <body>
@@ -180,26 +180,26 @@ def render_voxel_builder(inventory: Counter, world=None, grid_size=20, cell=1.0,
 <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/controls/OrbitControls.js"></script>
 
 <script>
-(function() {{
-  if (!window.THREE || !THREE.OrbitControls) {{
+(function() {
+  if (!window.THREE || !THREE.OrbitControls) {
     document.body.innerHTML =
       '<div style="color:#fff;font-family:system-ui;padding:16px">⚠️ Failed to load Three.js. Try reloading. If you are offline, enable Free build or allow CDN.</div>';
     return;
-  }}
+  }
 
-  const GRID_SIZE = {grid_size};
-  const CELL = {cell};
-  const FREE_BUILD = {str(free_build).lower()};
-  const NAMES    = {json.dumps(names)};
-  const textures = {json.dumps(textures)};
-  const colors   = {json.dumps(colors)};
-  const emojis   = {json.dumps(emojis)};
-  let inventory  = {json.dumps(inv_map)};
-  let world      = {json.dumps(world)};
+  const GRID_SIZE = __GRID_SIZE__;
+  const CELL = __CELL__;
+  const FREE_BUILD = __FREE_BUILD__;
+  const NAMES    = __NAMES__;
+  const textures = __TEXTURES__;
+  const colors   = __COLORS__;
+  const emojis   = __EMOJIS__;
+  let inventory  = __INV__;
+  let world      = __WORLD__;
 
-  if (Object.keys(inventory).length === 0) {{
+  if (Object.keys(inventory).length === 0) {
     inventory = Object.fromEntries(NAMES.map(n => [n, FREE_BUILD ? 9999 : 0]));
-  }}
+  }
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x111111);
@@ -232,54 +232,54 @@ def render_voxel_builder(inventory: Counter, world=None, grid_size=20, cell=1.0,
   const mouse = new THREE.Vector2();
 
   const texCache = new Map();
-  function makeMaterial(name) {{
+  function makeMaterial(name) {
     const url = textures[name];
-    if (url) {{
-      if (!texCache.has(url)) {{
+    if (url) {
+      if (!texCache.has(url)) {
         const loader = new THREE.TextureLoader();
         const t = loader.load(url);
         t.magFilter = THREE.NearestFilter; t.minFilter = THREE.LinearMipMapLinearFilter;
         texCache.set(url, t);
-      }}
+      }
       return new THREE.MeshStandardMaterial({ map: texCache.get(url) });
-    }}
+    }
     return new THREE.MeshStandardMaterial({ color: new THREE.Color(colors[name]||"#cccccc") });
-  }}
+  }
 
   const cubeGeo = new THREE.BoxGeometry(CELL, CELL, CELL);
   const voxelGroup = new THREE.Group(); scene.add(voxelGroup);
-  function key(x,y,z) {{ return x + '|' + y + '|' + z; }}
+  function key(x,y,z) { return x + '|' + y + '|' + z; }
   const voxels = new Map(); const voxelData = new Map();
 
-  function placeVoxel(x,y,z,name) {{
+  function placeVoxel(x,y,z,name) {
     const k = key(x,y,z); if (voxels.has(k)) return false;
-    if (!FREE_BUILD) {{
+    if (!FREE_BUILD) {
       if (!inventory[name] || inventory[name] <= 0) return false;
-    }}
+    }
     const mesh = new THREE.Mesh(cubeGeo, makeMaterial(name));
     mesh.castShadow = true; mesh.receiveShadow = true;
     mesh.position.set(x+CELL/2, y+CELL/2, z+CELL/2);
-    voxelGroup.add(mesh); voxels.set(k, mesh); voxelData.set(k, {{ name }});
-    if (!FREE_BUILD) {{ inventory[name] -= 1; refreshUI(); }}
+    voxelGroup.add(mesh); voxels.set(k, mesh); voxelData.set(k, { name });
+    if (!FREE_BUILD) { inventory[name] -= 1; refreshUI(); }
     return true;
-  }}
-  function removeVoxel(x,y,z) {{
+  }
+  function removeVoxel(x,y,z) {
     const k = key(x,y,z); if (!voxels.has(k)) return false;
     const mesh = voxels.get(k); const info = voxelData.get(k);
     voxelGroup.remove(mesh); mesh.geometry.dispose();
     if (mesh.material.map) mesh.material.map.dispose(); mesh.material.dispose();
     voxels.delete(k); voxelData.delete(k);
-    if (!FREE_BUILD && info && info.name) {{ inventory[info.name] = (inventory[info.name]||0) + 1; refreshUI(); }}
+    if (!FREE_BUILD && info && info.name) { inventory[info.name] = (inventory[info.name]||0) + 1; refreshUI(); }
     return true;
-  }}
+  }
 
   const blockSel = document.getElementById("blockSel");
-  function refreshDropdown() {{
+  function refreshDropdown() {
     const prev = blockSel.value;
     blockSel.innerHTML = "";
     let first = null;
     const keys = FREE_BUILD ? NAMES : Array.from(new Set([...NAMES, ...Object.keys(inventory)]));
-    keys.forEach(name => {{
+    keys.forEach(name => {
       const cnt = inventory[name] ?? (FREE_BUILD ? 9999 : 0);
       const opt = document.createElement("option");
       opt.value = name;
@@ -287,84 +287,84 @@ def render_voxel_builder(inventory: Counter, world=None, grid_size=20, cell=1.0,
       if (!FREE_BUILD && cnt === 0) opt.disabled = true;
       blockSel.appendChild(opt);
       if (first === null && (!opt.disabled)) first = name;
-    }});
+    });
     const enabled = Array.from(blockSel.options).filter(o => !o.disabled);
-    if (enabled.length) {{
-      blockSel.value = (prev && !blockSel.querySelector(`option[value="{{prev}}"]`)?.disabled) ? prev : first;
-    }} else {{
+    if (enabled.length) {
+      blockSel.value = (prev && !blockSel.querySelector(`option[value="${prev}"]`)?.disabled) ? prev : first;
+    } else {
       const opt = document.createElement("option");
       opt.textContent = "No blocks available — earn some in Practice";
       opt.disabled = true; opt.selected = true;
       blockSel.appendChild(opt);
-    }}
-  }}
+    }
+  }
 
-  function refreshInventory() {{
+  function refreshInventory() {
     const invDiv = document.getElementById("inv");
     invDiv.innerHTML = "<b>Inventory</b>";
     const keys = FREE_BUILD ? NAMES : Object.keys(inventory);
-    keys.forEach(name => {{
+    keys.forEach(name => {
       const cnt = inventory[name] ?? (FREE_BUILD ? "∞" : 0);
       const row = document.createElement("div");
       row.innerHTML = "<span>" + (emojis[name]||"") + " " + name + "</span><span>× " + cnt + "</span>";
       invDiv.appendChild(row);
-    }});
-  }}
+    });
+  }
 
-  function refreshUI() {{
+  function refreshUI() {
     refreshDropdown();
     refreshInventory();
     document.getElementById("msg").textContent =
       "Left click: place • Shift/Right click: remove • Drag: orbit • Scroll: zoom";
-  }}
+  }
 
   // Initial UI
   refreshUI();
 
   // Load world (doesn’t charge inventory)
-  function loadWorld(w) {{
-    for (const [k,m] of voxels) {{
+  function loadWorld(w) {
+    for (const [k,m] of voxels) {
       voxelGroup.remove(m); m.geometry.dispose(); if (m.material.map) m.material.map.dispose(); m.material.dispose();
-    }}
+    }
     voxels.clear(); voxelData.clear();
     if (!w || !w.voxels) return;
-    w.voxels.forEach(v => {{
+    w.voxels.forEach(v => {
       const mesh = new THREE.Mesh(cubeGeo, makeMaterial(v.name));
       mesh.castShadow = true; mesh.receiveShadow = true;
       mesh.position.set(v.x+CELL/2, v.y+CELL/2, v.z+CELL/2);
       voxelGroup.add(mesh);
-      const k = key(v.x,v.y,v.z); voxels.set(k, mesh); voxelData.set(k, {{ name: v.name }});
-    }});
-  }}
+      const k = key(v.x,v.y,v.z); voxels.set(k, mesh); voxelData.set(k, { name: v.name });
+    });
+  }
   loadWorld(world);
 
   // UI buttons
   let mode = "place";
   const modeBtn = document.getElementById("modeBtn");
-  modeBtn.onclick = () => {{
+  modeBtn.onclick = () => {
     mode = (mode === "place") ? "remove" : "place";
     modeBtn.textContent = "Mode: " + (mode === "place" ? "Place" : "Remove");
-  }};
-  document.getElementById("saveBtn").onclick = () => {{
-    const data = {{ voxels: [] }};
-    for (const [k,info] of voxelData) {{
+  };
+  document.getElementById("saveBtn").onclick = () => {
+    const data = { voxels: [] };
+    for (const [k,info] of voxelData) {
       const parts = k.split("|").map(Number);
-      data.voxels.push({{ x: parts[0], y: parts[1], z: parts[2], name: info.name }});
-    }}
-    const blob = new Blob([JSON.stringify(data,null,2)], {{type:"application/json"}});
+      data.voxels.push({ x: parts[0], y: parts[1], z: parts[2], name: info.name });
+    }
+    const blob = new Blob([JSON.stringify(data,null,2)], {type:"application/json"});
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a"); a.href = url; a.download = "world3d.json"; a.click();
     URL.revokeObjectURL(url);
-  }};
-  document.getElementById("loadFile").addEventListener("change", (e) => {{
+  };
+  document.getElementById("loadFile").addEventListener("change", (e) => {
     const f = e.target.files[0]; if (!f) return;
     const r = new FileReader();
-    r.onload = () => {{ try {{ loadWorld(JSON.parse(r.result)); }} catch(err) {{ alert("Bad JSON: "+err); }} }};
+    r.onload = () => { try { loadWorld(JSON.parse(r.result)); } catch(err) { alert("Bad JSON: "+err); } };
     r.readAsText(f);
-  }});
+  });
 
   // Mouse interaction
-  function onPointerDown(event) {{
+  function onPointerDown(event) {
     event.preventDefault();
     const rect = renderer.domElement.getBoundingClientRect();
     mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
@@ -375,50 +375,63 @@ def render_voxel_builder(inventory: Counter, world=None, grid_size=20, cell=1.0,
     const pickPlane = raycaster.intersectObject(plane, false)[0];
     const wantRemove = (mode === "remove") || (event.button === 2) || event.shiftKey;
 
-    if (wantRemove && pickVox) {{
+    if (wantRemove && pickVox) {
       const p = pickVox.object.position.clone().subScalar(CELL/2);
       const x = Math.round(p.x / CELL) * CELL;
       const y = Math.round(p.y / CELL) * CELL;
       const z = Math.round(p.z / CELL) * CELL;
       removeVoxel(x,y,z); return;
-    }}
+    }
 
-    if (pickVox && !wantRemove) {{
+    if (pickVox && !wantRemove) {
       const n = pickVox.face.normal.clone();
       const p = pickVox.object.position.clone().subScalar(CELL/2).addScaledVector(n, CELL);
       const x = Math.round(p.x / CELL) * CELL;
       const y = Math.round(p.y / CELL) * CELL;
       const z = Math.round(p.z / CELL) * CELL;
       placeVoxel(x,y,z, blockSel.value); return;
-    }}
+    }
 
-    if (pickPlane && !wantRemove) {{
+    if (pickPlane && !wantRemove) {
       const p = pickPlane.point.clone();
       const x = Math.round(p.x / CELL) * CELL;
       const y = 0;
       const z = Math.round(p.z / CELL) * CELL;
       placeVoxel(x,y,z, blockSel.value);
-    }}
-  }}
+    }
+  }
   renderer.domElement.addEventListener("pointerdown", onPointerDown);
   renderer.domElement.addEventListener("contextmenu", e => e.preventDefault());
 
-  window.addEventListener("resize", () => {{
+  window.addEventListener("resize", () => {
     camera.aspect = window.innerWidth/window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
-  }});
+  });
 
-  function animate() {{ requestAnimationFrame(animate); controls.update(); renderer.render(scene, camera); }}
+  function animate() { requestAnimationFrame(animate); controls.update(); renderer.render(scene, camera); }
   animate();
 
   document.getElementById("msg").textContent =
     "Left click: place • Shift/Right click: remove • Drag: orbit • Scroll: zoom";
-}})();
+})();
 </script>
 </body>
 </html>
 """
+    # Replace placeholders
+    import json as _json
+    html = (html_template
+            .replace("__GRID_SIZE__", str(grid_size))
+            .replace("__CELL__", str(cell))
+            .replace("__FREE_BUILD__", str(free_build).lower())
+            .replace("__NAMES__", _json.dumps(names))
+            .replace("__TEXTURES__", _json.dumps(textures))
+            .replace("__COLORS__", _json.dumps(colors))
+            .replace("__EMOJIS__", _json.dumps(emojis))
+            .replace("__INV__", _json.dumps(inv_map))
+            .replace("__WORLD__", _json.dumps(world))
+           )
     import streamlit.components.v1 as components
     components.html(html, height=720, scrolling=False)
 
