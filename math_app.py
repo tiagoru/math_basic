@@ -6,7 +6,15 @@ from pathlib import Path
 import streamlit as st
 from PIL import Image
 
+def inventory_counts():
+    # Use an empty list if inventory hasn't been created yet
+    return Counter(st.session_state.get("inventory", []))
+
+
 st.set_page_config(page_title="Gui Gui Math Trainer", page_icon="🧮", layout="centered")
+# ---------- Initialize state (MOVE THIS ABOVE THE SIDEBAR) ----------
+if "questions" not in st.session_state:
+    reset_game()
 
 # ========== Assets & Blocks ==========
 ASSET_DIR = Path("assets/blocks")
