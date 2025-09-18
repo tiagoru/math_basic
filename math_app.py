@@ -1,26 +1,17 @@
 import random
-import os
 from collections import Counter
 from pathlib import Path
 
 import streamlit as st
 from PIL import Image
 
-def inventory_counts():
-    # Use an empty list if inventory hasn't been created yet
-    return Counter(st.session_state.get("inventory", []))
-
-
+# -------------------- App setup --------------------
 st.set_page_config(page_title="Gui Gui Math Trainer", page_icon="🧮", layout="centered")
-# ---------- Initialize state (MOVE THIS ABOVE THE SIDEBAR) ----------
-if "questions" not in st.session_state:
-    reset_game()
 
-# ========== Assets & Blocks ==========
+# -------------------- Assets & Blocks --------------------
 ASSET_DIR = Path("assets/blocks")
 
-# Define available blocks, with filenames (put your PNGs in assets/blocks/)
-# Rarity weights make special blocks a little rarer.
+# Available blocks (put PNGs in assets/blocks/). Weights make rare blocks rarer.
 BLOCKS = [
     {"name": "Grass",        "emoji": "🟩", "file": "grass.png",         "weight": 8},
     {"name": "Dirt",         "emoji": "🟫", "file": "dirt.png",          "weight": 8},
@@ -39,7 +30,6 @@ BLOCKS = [
     {"name": "TNT",          "emoji": "🧨", "file": "tnt.png",           "weight": 1},
 ]
 
-# Cache images so we don’t reload every time
 @st.cache_data(show_spinner=False)
 def load_block_images():
     imgs = {}
@@ -63,22 +53,26 @@ def get_block_visual(name):
     emoji = next(b["emoji"] for b in BLOCKS if b["name"] == name)
     return img, emoji
 
-# ========== Math Generators ==========
+# -------------------- Math generators --------------------
 def gen_add(min_n, max_n):
-    a = random.randint(min_n, max_n); b = random.randint(min_n, max_n)
+    a = random.randint(min_n, max_n)
+    b = random.randint(min_n, max_n)
     return a, b, "+", a + b
 
 def gen_sub(min_n, max_n):
-    a = random.randint(min_n, max_n); b = random.randint(min_n, max_n)
-    if b > a: a, b = b, a
+    a = random.randint(min_n, max_n)
+    b = random.randint(min_n, max_n)
+    if b > a:
+        a, b = b, a
     return a, b, "−", a - b
 
 def gen_mul(min_n, max_n):
-    a = random.randint(min_n, max_n); b = random.randint(min_n, max_n)
+    a = random.randint(min_n, max_n)
+    b = random.randint(min_n, max_n)
     return a, b, "×", a * b
 
 def gen_div(min_n, max_n):
-    b = random.randint(max(min_n, 1), max_n)
+    b = random.randint(max(min_n, 1), max_n)  # avoid zero divisor
     result = random.randint(min_n, max_n)
     a = b * result
     return a, b, "÷", result
@@ -87,23 +81,21 @@ def generate_questions(n, ops, min_n, max_n):
     qs = []
     for _ in range(n):
         op = random.choice(ops)
-        if op == "+": a,b,sym,ans = gen_add(min_n,max_n)
-        elif op == "−": a,b,sym,ans = gen_sub(min_n,max_n)
-        elif op == "×": a,b,sym,ans = gen_mul(min_n,max_n)
-        else: a,b,sym,ans = gen_div(min_n,max_n)
+        if op == "+":
+            a, b, sym, ans = gen_add(min_n, max_n)
+        elif op == "−":
+            a, b, sym, ans = gen_sub(min_n, max_n)
+        elif op == "×":
+            a, b, sym, ans = gen_mul(min_n, max_n)
+        else:
+            a, b, sym, ans = gen_div(min_n, max_n)
         qs.append({"a": a, "b": b, "op": sym, "answer": ans, "text": f"{a} {sym} {b} = ?"})
     return qs
 
-# Weighted random block award
-def award_block():
-    names = [b["name"] for b in BLOCKS]
-    weights = [b["weight"] for b in BLOCKS]
-    choice = random.choices(names, weights=weights, k=1)[0]
-    st.session_state.inventory.append(choice)
-    return choice
-
+# -------------------- Game state helpers --------------------
 def reset_game(num_q=10, min_n=0, max_n=12, ops=None):
-    if ops is None: ops = ["+", "−", "×", "÷"]
+    if ops is None:
+        ops = ["+", "−", "×", "÷"]
     st.session_state.questions = generate_questions(num_q, ops, min_n, max_n)
     st.session_state.idx = 0
     st.session_state.attempts_left = 3
@@ -113,17 +105,24 @@ def reset_game(num_q=10, min_n=0, max_n=12, ops=None):
     st.session_state.question_done = False
     st.session_state.last_correct = None
     st.session_state.user_answer = None
-    st.session_state.inventory = []
+    st.session_state.inventory = []  # collected blocks
+
+def award_block():
+    names = [b["name"] for b in BLOCKS]
+    weights = [b["weight"] for b in BLOCKS]
+    choice = random.choices(names, weights=weights, k=1)[0]
+    st.session_state.inventory.append(choice)
+    return choice
 
 def inventory_counts():
-    return Counter(st.session_state.inventory)
+    # Robust against missing key
+    return Counter(st.session_state.get("inventory", []))
 
 def inventory_gallery():
     counts = inventory_counts()
     if not counts:
         st.caption("No blocks yet — answer correctly to collect some! ⛏️")
         return
-    # Display as a responsive grid
     cols = st.columns(5)
     i = 0
     for name, cnt in sorted(counts.items()):
@@ -132,8 +131,14 @@ def inventory_gallery():
             if img is not None:
                 st.image(img, use_container_width=True)
             else:
-                st.markdown(f"<div style='font-size:48px;text-align:center'>{emoji}</div>", unsafe_allow_html=True)
-            st.markdown(f"<div style='text-align:center'><b>{name}</b><br/>× {cnt}</div>", unsafe_allow_html=True)
+                st.markdown(
+                    "<div style='font-size:48px;text-align:center'>{}</div>".format(emoji),
+                    unsafe_allow_html=True,
+                )
+            st.markdown(
+                "<div style='text-align:center'><b>{}</b><br/>× {}</div>".format(name, cnt),
+                unsafe_allow_html=True,
+            )
         i += 1
 
 def inventory_quick_row():
@@ -147,7 +152,11 @@ def inventory_quick_row():
         items.append(f"{emoji}×{cnt}")
     st.write(" ".join(items))
 
-# ========== Sidebar ==========
+# -------------------- Initialize state BEFORE sidebar --------------------
+if "questions" not in st.session_state:
+    reset_game()
+
+# -------------------- Sidebar --------------------
 with st.sidebar:
     st.header("⚙️ Settings")
     num_q = st.slider("Number of questions", 5, 20, 10, 1)
@@ -156,13 +165,20 @@ with st.sidebar:
     include_sub = st.checkbox("Subtraction (−)", True)
     include_mul = st.checkbox("Multiplication (×)", True)
     include_div = st.checkbox("Division (÷)", True)
+
     chosen_ops = []
-    if include_add: chosen_ops.append("+")
-    if include_sub: chosen_ops.append("−")
-    if include_mul: chosen_ops.append("×")
-    if include_div: chosen_ops.append("÷")
+    if include_add:
+        chosen_ops.append("+")
+    if include_sub:
+        chosen_ops.append("−")
+    if include_mul:
+        chosen_ops.append("×")
+    if include_div:
+        chosen_ops.append("÷")
+
     if not chosen_ops:
         st.warning("Select at least one operation to include.")
+
     if st.button("🔄 Start new game", type="primary", use_container_width=True, disabled=not chosen_ops):
         reset_game(num_q=num_q, min_n=0, max_n=max_n, ops=chosen_ops)
 
@@ -170,15 +186,14 @@ with st.sidebar:
     st.subheader("🎒 Inventory")
     inventory_gallery()
 
-# ========== Init ==========
-if "questions" not in st.session_state:
-    reset_game()
-
-# ========== Header ==========
+# -------------------- Header --------------------
 st.title("🧮 Kids Math Trainer")
-st.caption("You have **3 attempts** per question. Answer correctly to collect a **Minecraft-style block** image! Default: **10 questions** (change in the sidebar).")
+st.caption(
+    "You have **3 attempts** per question. Answer correctly to collect a **Minecraft-style block** image! "
+    "Default: **10 questions** (change in the sidebar)."
+)
 
-# ========== Finished Screen ==========
+# -------------------- Finished screen --------------------
 if st.session_state.finished:
     total = len(st.session_state.questions)
     st.success(f"All done! Score: **{st.session_state.score} / {total}** 🎉")
@@ -200,7 +215,7 @@ if st.session_state.finished:
     st.button("Play again", on_click=reset_game, type="primary")
     st.stop()
 
-# ========== Current Question ==========
+# -------------------- Current question --------------------
 idx = st.session_state.idx
 total = len(st.session_state.questions)
 q = st.session_state.questions[idx]
@@ -213,12 +228,13 @@ with st.expander("Quick view: your blocks so far", expanded=False):
 st.markdown(f"### {q['text']}")
 st.caption(f"Attempts left: **{st.session_state.attempts_left}**")
 
-# ========== Answer Form ==========
+# -------------------- Answer form --------------------
 with st.form("answer_form", clear_on_submit=False):
     ans = st.number_input(
         "Your answer",
         value=st.session_state.user_answer if st.session_state.user_answer is not None else 0,
-        step=1, format="%d"
+        step=1,
+        format="%d",
     )
     submitted = st.form_submit_button("Check")
 
@@ -239,14 +255,18 @@ if submitted and not st.session_state.question_done:
     else:
         st.session_state.attempts_left -= 1
         if st.session_state.attempts_left > 0:
-            st.session_state.feedback = f"❌ Not quite. Try again! Attempts left: {st.session_state.attempts_left}"
+            st.session_state.feedback = (
+                f"❌ Not quite. Try again! Attempts left: {st.session_state.attempts_left}"
+            )
             st.session_state.last_correct = False
         else:
-            st.session_state.feedback = f"❌ Out of attempts. The correct answer was **{q['answer']}**."
+            st.session_state.feedback = (
+                f"❌ Out of attempts. The correct answer was **{q['answer']}**."
+            )
             st.session_state.question_done = True
             st.session_state.last_correct = False
 
-# ========== Feedback & Navigation ==========
+# -------------------- Feedback & navigation --------------------
 if st.session_state.feedback:
     if st.session_state.question_done:
         st.info(st.session_state.feedback)
@@ -272,4 +292,6 @@ with col2:
         st.rerun()
 
 st.write("")
-st.caption("Tip: Put PNGs in **assets/blocks/** using the listed filenames. Missing images will show emojis instead.")
+st.caption(
+    "Tip: Put PNGs in **assets/blocks/** using the listed filenames. Missing images will show emojis instead."
+)
