@@ -104,16 +104,16 @@ def award_block():
 def inventory_counts() -> Counter:
     return Counter(st.session_state.get("inventory", []))
 
-# -------------------- 3D builder component (UMD + base64, no f-strings) --------------------
-def render_voxel_builder(inventory: Counter, world=None, grid_size=24, cell=1.0, free_build: bool=False):
+def render_voxel_builder(inventory: Counter, world=None, grid_size=24, cell=1.0, free_build: bool=False, prefer_local: bool=False):
     """
-    3D voxel editor with robust Three.js loading:
-      • Tries multiple CDNs (jsDelivr → unpkg → cdnjs) at runtime.
-      • Uses base64 textures (no CORS/paths).
-      • Optional free_build ignores inventory.
+    3D voxel editor:
+      • Uses local Three.js if available (assets/libs/*), or if prefer_local=True.
+      • Otherwise falls back to multiple CDNs (jsDelivr → unpkg → cdnjs).
+      • Base64-embeds block textures (no image paths/CORS).
     """
     import base64, io, json as _json
     import streamlit.components.v1 as components
+    from pathlib import Path
 
     names = [b["name"] for b in BLOCKS]
 
@@ -130,6 +130,18 @@ def render_voxel_builder(inventory: Counter, world=None, grid_size=24, cell=1.0,
     emojis   = {b["name"]: b["emoji"] for b in BLOCKS}
     inv_map  = {k: int(v) for k, v in inventory.items()}
     world    = world if world else {"voxels": []}
+
+    # -------- Local library detection --------
+    lib_dir = Path("assets/libs")
+    three_path = lib_dir / "three.min.js"
+    orbit_path = lib_dir / "OrbitControls.js"
+    use_local = prefer_local and three_path.exists() and orbit_path.exists()
+    local_scripts = ""
+    if use_local:
+        three_js = three_path.read_text(encoding="utf-8")
+        orbit_js = orbit_path.read_text(encoding="utf-8")
+        # Inline the JS so browsers don’t block file:// in iframes
+        local_scripts = "<script>" + three_js + "</script>\n<script>" + orbit_js + "</script>"
 
     html_template = """
 <!DOCTYPE html>
@@ -165,255 +177,257 @@ def render_voxel_builder(inventory: Counter, world=None, grid_size=24, cell=1.0,
   <input id="loadFile" type="file" accept="application/json"/>
   <div id="inv"><b>Inventory</b></div>
 </div>
-<div id="msg">Loading 3D libraries…</div>
+<div id="msg">Loading 3D…</div>
+
+__LOCAL_LIBS__
 
 <script>
-(async function() {
-  const msg = document.getElementById("msg");
+(function() {
+  const USE_LOCAL = __USE_LOCAL__;
 
-  function loadScript(src) {
+  async function loadScript(src) {
     return new Promise((resolve, reject) => {
       const s = document.createElement("script");
       s.src = src; s.async = true;
-      s.onload = () => resolve(src);
-      s.onerror = () => reject(new Error("Failed: " + src));
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error("Failed " + src));
       document.head.appendChild(s);
     });
   }
-  async function tryMany(urls, label) {
-    for (const u of urls) {
-      try { await loadScript(u); return u; } catch (e) { /* try next */ }
-    }
-    throw new Error("All " + label + " failed");
+
+  async function ensureThree() {
+    if (USE_LOCAL) return true; // already inlined
+    const threeURLs = [
+      "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js",
+      "https://unpkg.com/three@0.160.0/build/three.min.js",
+      "https://cdnjs.cloudflare.com/ajax/libs/three.js/r160/three.min.js"
+    ];
+    const ocURLs = [
+      "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/controls/OrbitControls.js",
+      "https://unpkg.com/three@0.160.0/examples/js/controls/OrbitControls.js",
+      "https://cdnjs.cloudflare.com/ajax/libs/three.js/r160/examples/js/controls/OrbitControls.min.js",
+      "https://cdnjs.cloudflare.com/ajax/libs/three.js/r160/examples/js/controls/OrbitControls.js"
+    ];
+    for (const u of threeURLs) { try { await loadScript(u); break; } catch(e) {} }
+    for (const u of ocURLs)    { try { await loadScript(u); break; } catch(e) {} }
+    return !!(window.THREE && THREE.OrbitControls);
   }
 
-  const threeURLs = [
-    "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js",
-    "https://unpkg.com/three@0.160.0/build/three.min.js",
-    "https://cdnjs.cloudflare.com/ajax/libs/three.js/r160/three.min.js"
-  ];
-  const ocURLs = [
-    "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/controls/OrbitControls.js",
-    "https://unpkg.com/three@0.160.0/examples/js/controls/OrbitControls.js",
-    "https://cdnjs.cloudflare.com/ajax/libs/three.js/r160/examples/js/controls/OrbitControls.min.js",
-    "https://cdnjs.cloudflare.com/ajax/libs/three.js/r160/examples/js/controls/OrbitControls.js"
-  ];
-
-  try {
-    await tryMany(threeURLs, "Three.js");
-    await tryMany(ocURLs, "OrbitControls");
-  } catch (err) {
-    document.body.innerHTML = '<div style="color:#fff;font-family:system-ui;padding:16px">⚠️ Failed to load Three.js (all CDNs blocked).<br/>Fix: allow one CDN, or host the files locally and I\'ll wire them up.</div>';
-    return;
-  }
-
-  if (!window.THREE || !THREE.OrbitControls) {
-    document.body.innerHTML = '<div style="color:#fff;font-family:system-ui;padding:16px">⚠️ Three.js loaded but controls missing.</div>';
-    return;
-  }
-
-  const GRID_SIZE = __GRID_SIZE__;
-  const CELL = __CELL__;
-  const FREE_BUILD = __FREE_BUILD__;
-  const NAMES    = __NAMES__;
-  const textures = __TEXTURES__;
-  const colors   = __COLORS__;
-  const emojis   = __EMOJIS__;
-  let inventory  = __INV__;
-  let world      = __WORLD__;
-
-  if (Object.keys(inventory).length === 0) {
-    inventory = Object.fromEntries(NAMES.map(n => [n, FREE_BUILD ? 9999 : 0]));
-  }
-
-  const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x111111);
-  const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 2000);
-  camera.position.set(15, 18, 22);
-
-  const renderer = new THREE.WebGLRenderer({ antialias: true });
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.shadowMap.enabled = true;
-  document.body.appendChild(renderer.domElement);
-
-  // keep UI clicks from triggering canvas handlers
-  const ui = document.getElementById("ui");
-  ui.addEventListener("pointerdown", e => e.stopPropagation());
-  ui.addEventListener("click", e => e.stopPropagation());
-
-  const controls = new THREE.OrbitControls(camera, renderer.domElement);
-  controls.enableDamping = true; controls.dampingFactor = 0.05; controls.target.set(0, 0, 0);
-
-  const ambient = new THREE.AmbientLight(0xffffff, 0.6); scene.add(ambient);
-  const dir = new THREE.DirectionalLight(0xffffff, 0.8); dir.position.set(20,30,10); dir.castShadow = true; scene.add(dir);
-
-  const gridHelper = new THREE.GridHelper(GRID_SIZE*2, GRID_SIZE*2, 0x444444, 0x222222);
-  gridHelper.rotation.x = Math.PI/2; scene.add(gridHelper);
-
-  const planeGeo = new THREE.PlaneGeometry(GRID_SIZE*2, GRID_SIZE*2); planeGeo.rotateX(-Math.PI/2);
-  const plane = new THREE.Mesh(planeGeo, new THREE.MeshBasicMaterial({ visible:false })); scene.add(plane);
-
-  const raycaster = new THREE.Raycaster();
-  const mouse = new THREE.Vector2();
-
-  const texCache = new Map();
-  function makeMaterial(name) {
-    const url = textures[name];
-    if (url) {
-      if (!texCache.has(url)) {
-        const loader = new THREE.TextureLoader();
-        const t = loader.load(url);
-        t.magFilter = THREE.NearestFilter; t.minFilter = THREE.LinearMipMapLinearFilter;
-        texCache.set(url, t);
-      }
-      return new THREE.MeshStandardMaterial({ map: texCache.get(url) });
-    }
-    return new THREE.MeshStandardMaterial({ color: new THREE.Color(colors[name]||"#cccccc") });
-  }
-
-  const cubeGeo = new THREE.BoxGeometry(CELL, CELL, CELL);
-  const voxelGroup = new THREE.Group(); scene.add(voxelGroup);
-  function key(x,y,z) { return x + '|' + y + '|' + z; }
-  const voxels = new Map(); const voxelData = new Map();
-
-  function placeVoxel(x,y,z,name) {
-    const k = key(x,y,z); if (voxels.has(k)) return false;
-    if (!FREE_BUILD) {
-      if (!inventory[name] || inventory[name] <= 0) return false;
-    }
-    const mesh = new THREE.Mesh(cubeGeo, makeMaterial(name));
-    mesh.castShadow = true; mesh.receiveShadow = true;
-    mesh.position.set(x+CELL/2, y+CELL/2, z+CELL/2);
-    voxelGroup.add(mesh); voxels.set(k, mesh); voxelData.set(k, { name });
-    if (!FREE_BUILD) { inventory[name] -= 1; refreshUI(); }
-    return true;
-  }
-  function removeVoxel(x,y,z) {
-    const k = key(x,y,z); if (!voxels.has(k)) return false;
-    const mesh = voxels.get(k); const info = voxelData.get(k);
-    voxelGroup.remove(mesh); mesh.geometry.dispose();
-    if (mesh.material.map) mesh.material.map.dispose(); mesh.material.dispose();
-    voxels.delete(k); voxelData.delete(k);
-    if (!FREE_BUILD && info && info.name) { inventory[info.name] = (inventory[info.name]||0) + 1; refreshUI(); }
-    return true;
-  }
-
-  const blockSel = document.getElementById("blockSel");
-  function refreshDropdown() {
-    const prev = blockSel.value;
-    blockSel.innerHTML = "";
-    let first = null;
-    const keys = FREE_BUILD ? NAMES : Array.from(new Set([...NAMES, ...Object.keys(inventory)]));
-    keys.forEach(name => {
-      const cnt = inventory[name] ?? (FREE_BUILD ? 9999 : 0);
-      const opt = document.createElement("option");
-      opt.value = name;
-      opt.textContent = (emojis[name]||"") + " " + name + " (" + (FREE_BUILD ? "∞" : cnt) + ")";
-      if (!FREE_BUILD && cnt === 0) opt.disabled = true;
-      blockSel.appendChild(opt);
-      if (first === null && (!opt.disabled)) first = name;
-    });
-    const enabled = Array.from(blockSel.options).filter(o => !o.disabled);
-    if (enabled.length) {
-      blockSel.value = (prev && !blockSel.querySelector(`option[value="${prev}"]`)?.disabled) ? prev : first;
-    } else {
-      const opt = document.createElement("option");
-      opt.textContent = "No blocks available — earn some in Practice";
-      opt.disabled = true; opt.selected = true;
-      blockSel.appendChild(opt);
-    }
-  }
-
-  function refreshInventory() {
-    const invDiv = document.getElementById("inv");
-    invDiv.innerHTML = "<b>Inventory</b>";
-    const keys = FREE_BUILD ? NAMES : Object.keys(inventory);
-    keys.forEach(name => {
-      const cnt = inventory[name] ?? (FREE_BUILD ? "∞" : 0);
-      const row = document.createElement("div");
-      row.innerHTML = "<span>" + (emojis[name]||"") + " " + name + "</span><span>× " + cnt + "</span>";
-      invDiv.appendChild(row);
-    });
-  }
-
-  function refreshUI() {
-    refreshDropdown();
-    refreshInventory();
-    msg.textContent = "Left click: place • Shift/Right click: remove • Drag: orbit • Scroll: zoom";
-  }
-
-  refreshUI();
-
-  function loadWorld(w) {
-    for (const [k,m] of voxels) {
-      voxelGroup.remove(m); m.geometry.dispose(); if (m.material.map) m.material.map.dispose(); m.material.dispose();
-    }
-    voxels.clear(); voxelData.clear();
-    if (!w || !w.voxels) return;
-    w.voxels.forEach(v => {
-      const mesh = new THREE.Mesh(cubeGeo, makeMaterial(v.name));
-      mesh.castShadow = true; mesh.receiveShadow = true;
-      mesh.position.set(v.x+CELL/2, v.y+CELL/2, v.z+CELL/2);
-      voxelGroup.add(mesh);
-      const k = key(v.x,v.y,v.z); voxels.set(k, mesh); voxelData.set(k, { name: v.name });
-    });
-  }
-  loadWorld(world);
-
-  function onPointerDown(event) {
-    event.preventDefault();
-    const rect = renderer.domElement.getBoundingClientRect();
-    mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-    mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-    raycaster.setFromCamera(mouse, camera);
-
-    const pickVox   = raycaster.intersectObjects(Array.from(voxels.values()), false)[0];
-    const pickPlane = raycaster.intersectObject(plane, false)[0];
-    const wantRemove = (event.shiftKey) || (event.button === 2);
-
-    if (wantRemove && pickVox) {
-      const p = pickVox.object.position.clone().subScalar(CELL/2);
-      const x = Math.round(p.x / CELL) * CELL;
-      const y = Math.round(p.y / CELL) * CELL;
-      const z = Math.round(p.z / CELL) * CELL;
-      removeVoxel(x,y,z); return;
+  (async () => {
+    const ok = await ensureThree();
+    if (!ok) {
+      document.body.innerHTML =
+        '<div style="color:#fff;font-family:system-ui;padding:16px">⚠️ Failed to load Three.js (all CDNs blocked and no local libs).<br/>Add files to <code>assets/libs/</code> or allow one CDN.</div>';
+      return;
     }
 
-    if (pickVox && !wantRemove) {
-      const n = pickVox.face.normal.clone();
-      const p = pickVox.object.position.clone().subScalar(CELL/2).addScaledVector(n, CELL);
-      const x = Math.round(p.x / CELL) * CELL;
-      const y = Math.round(p.y / CELL) * CELL;
-      const z = Math.round(p.z / CELL) * CELL;
-      placeVoxel(x,y,z, blockSel.value); return;
+    const GRID_SIZE = __GRID_SIZE__;
+    const CELL = __CELL__;
+    const FREE_BUILD = __FREE_BUILD__;
+    const NAMES    = __NAMES__;
+    const textures = __TEXTURES__;
+    const colors   = __COLORS__;
+    const emojis   = __EMOJIS__;
+    let inventory  = __INV__;
+    let world      = __WORLD__;
+
+    if (Object.keys(inventory).length === 0) {
+      inventory = Object.fromEntries(NAMES.map(n => [n, FREE_BUILD ? 9999 : 0]));
     }
 
-    if (pickPlane && !wantRemove) {
-      const p = pickPlane.point.clone();
-      const x = Math.round(p.x / CELL) * CELL;
-      const y = 0;
-      const z = Math.round(p.z / CELL) * CELL;
-      placeVoxel(x,y,z, blockSel.value);
-    }
-  }
-  renderer.domElement.addEventListener("pointerdown", onPointerDown);
-  renderer.domElement.addEventListener("contextmenu", e => e.preventDefault());
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x111111);
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 2000);
+    camera.position.set(15, 18, 22);
 
-  window.addEventListener("resize", () => {
-    camera.aspect = window.innerWidth/window.innerHeight;
-    camera.updateProjectionMatrix();
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
-  });
+    renderer.shadowMap.enabled = true;
+    document.body.appendChild(renderer.domElement);
 
-  const controls = new THREE.OrbitControls(camera, renderer.domElement);
-  function animate() { requestAnimationFrame(animate); controls.update(); renderer.render(scene, camera); }
-  animate();
+    const ui = document.getElementById("ui");
+    ui.addEventListener("pointerdown", e => e.stopPropagation());
+    ui.addEventListener("click", e => e.stopPropagation());
+
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true; controls.dampingFactor = 0.05; controls.target.set(0, 0, 0);
+
+    const ambient = new THREE.AmbientLight(0xffffff, 0.6); scene.add(ambient);
+    const dir = new THREE.DirectionalLight(0xffffff, 0.8); dir.position.set(20,30,10); dir.castShadow = true; scene.add(dir);
+
+    const gridHelper = new THREE.GridHelper(GRID_SIZE*2, GRID_SIZE*2, 0x444444, 0x222222);
+    gridHelper.rotation.x = Math.PI/2; scene.add(gridHelper);
+
+    const planeGeo = new THREE.PlaneGeometry(GRID_SIZE*2, GRID_SIZE*2); planeGeo.rotateX(-Math.PI/2);
+    const plane = new THREE.Mesh(planeGeo, new THREE.MeshBasicMaterial({ visible:false })); scene.add(plane);
+
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+
+    const texCache = new Map();
+    function makeMaterial(name) {
+      const url = textures[name];
+      if (url) {
+        if (!texCache.has(url)) {
+          const loader = new THREE.TextureLoader();
+          const t = loader.load(url);
+          t.magFilter = THREE.NearestFilter; t.minFilter = THREE.LinearMipMapLinearFilter;
+          texCache.set(url, t);
+        }
+        return new THREE.MeshStandardMaterial({ map: texCache.get(url) });
+      }
+      return new THREE.MeshStandardMaterial({ color: new THREE.Color(colors[name]||"#cccccc") });
+    }
+
+    const cubeGeo = new THREE.BoxGeometry(CELL, CELL, CELL);
+    const voxelGroup = new THREE.Group(); scene.add(voxelGroup);
+    function key(x,y,z) { return x + '|' + y + '|' + z; }
+    const voxels = new Map(); const voxelData = new Map();
+
+    function placeVoxel(x,y,z,name) {
+      const k = key(x,y,z); if (voxels.has(k)) return false;
+      if (!FREE_BUILD) {
+        if (!inventory[name] || inventory[name] <= 0) return false;
+      }
+      const mesh = new THREE.Mesh(cubeGeo, makeMaterial(name));
+      mesh.castShadow = true; mesh.receiveShadow = true;
+      mesh.position.set(x+CELL/2, y+CELL/2, z+CELL/2);
+      voxelGroup.add(mesh); voxels.set(k, mesh); voxelData.set(k, { name });
+      if (!FREE_BUILD) { inventory[name] -= 1; refreshUI(); }
+      return true;
+    }
+    function removeVoxel(x,y,z) {
+      const k = key(x,y,z); if (!voxels.has(k)) return false;
+      const mesh = voxels.get(k); const info = voxelData.get(k);
+      voxelGroup.remove(mesh); mesh.geometry.dispose();
+      if (mesh.material.map) mesh.material.map.dispose(); mesh.material.dispose();
+      voxels.delete(k); voxelData.delete(k);
+      if (!FREE_BUILD && info && info.name) { inventory[info.name] = (inventory[info.name]||0) + 1; refreshUI(); }
+      return true;
+    }
+
+    const blockSel = document.getElementById("blockSel");
+    function refreshDropdown() {
+      const prev = blockSel.value;
+      blockSel.innerHTML = "";
+      let first = null;
+      const keys = FREE_BUILD ? NAMES : Array.from(new Set([...NAMES, ...Object.keys(inventory)]));
+      keys.forEach(name => {
+        const cnt = inventory[name] ?? (FREE_BUILD ? 9999 : 0);
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = (emojis[name]||"") + " " + name + " (" + (FREE_BUILD ? "∞" : cnt) + ")";
+        if (!FREE_BUILD && cnt === 0) opt.disabled = true;
+        blockSel.appendChild(opt);
+        if (first === null && (!opt.disabled)) first = name;
+      });
+      const enabled = Array.from(blockSel.options).filter(o => !o.disabled);
+      if (enabled.length) {
+        blockSel.value = (prev && !blockSel.querySelector(`option[value="${prev}"]`)?.disabled) ? prev : first;
+      } else {
+        const opt = document.createElement("option");
+        opt.textContent = "No blocks available — earn some in Practice";
+        opt.disabled = true; opt.selected = true;
+        blockSel.appendChild(opt);
+      }
+    }
+
+    function refreshInventory() {
+      const invDiv = document.getElementById("inv");
+      invDiv.innerHTML = "<b>Inventory</b>";
+      const keys = FREE_BUILD ? NAMES : Object.keys(inventory);
+      keys.forEach(name => {
+        const cnt = inventory[name] ?? (FREE_BUILD ? "∞" : 0);
+        const row = document.createElement("div");
+        row.innerHTML = "<span>" + (emojis[name]||"") + " " + name + "</span><span>× " + cnt + "</span>";
+        invDiv.appendChild(row);
+      });
+    }
+
+    function refreshUI() {
+      refreshDropdown();
+      refreshInventory();
+      document.getElementById("msg").textContent =
+        "Left click: place • Shift/Right click: remove • Drag: orbit • Scroll: zoom";
+    }
+
+    refreshUI();
+
+    function loadWorld(w) {
+      for (const [k,m] of voxels) {
+        voxelGroup.remove(m); m.geometry.dispose(); if (m.material.map) m.material.map.dispose(); m.material.dispose();
+      }
+      voxels.clear(); voxelData.clear();
+      if (!w || !w.voxels) return;
+      w.voxels.forEach(v => {
+        const mesh = new THREE.Mesh(cubeGeo, makeMaterial(v.name));
+        mesh.castShadow = true; mesh.receiveShadow = true;
+        mesh.position.set(v.x+CELL/2, v.y+CELL/2, v.z+CELL/2);
+        voxelGroup.add(mesh);
+        const k = key(v.x,v.y,v.z); voxels.set(k, mesh); voxelData.set(k, { name: v.name });
+      });
+    }
+    loadWorld(world);
+
+    function onPointerDown(event) {
+      event.preventDefault();
+      const rect = renderer.domElement.getBoundingClientRect();
+      const mouse = new THREE.Vector2(
+        ((event.clientX - rect.left) / rect.width) * 2 - 1,
+        -((event.clientY - rect.top) / rect.height) * 2 + 1
+      );
+      const raycaster = new THREE.Raycaster();
+      raycaster.setFromCamera(mouse, camera);
+
+      const pickVox   = raycaster.intersectObjects(Array.from(voxels.values()), false)[0];
+      const pickPlane = raycaster.intersectObject(plane, false)[0];
+      const wantRemove = (event.shiftKey) || (event.button === 2);
+
+      if (wantRemove && pickVox) {
+        const p = pickVox.object.position.clone().subScalar(CELL/2);
+        const x = Math.round(p.x / CELL) * CELL;
+        const y = Math.round(p.y / CELL) * CELL;
+        const z = Math.round(p.z / CELL) * CELL;
+        removeVoxel(x,y,z); return;
+      }
+
+      if (pickVox && !wantRemove) {
+        const n = pickVox.face.normal.clone();
+        const p = pickVox.object.position.clone().subScalar(CELL/2).addScaledVector(n, CELL);
+        const x = Math.round(p.x / CELL) * CELL;
+        const y = Math.round(p.y / CELL) * CELL;
+        const z = Math.round(p.z / CELL) * CELL;
+        placeVoxel(x,y,z, blockSel.value); return;
+      }
+
+      if (pickPlane && !wantRemove) {
+        const p = pickPlane.point.clone();
+        const x = Math.round(p.x / CELL) * CELL;
+        const y = 0;
+        const z = Math.round(p.z / CELL) * CELL;
+        placeVoxel(x,y,z, blockSel.value);
+      }
+    }
+    renderer.domElement.addEventListener("pointerdown", onPointerDown);
+    renderer.domElement.addEventListener("contextmenu", e => e.preventDefault());
+
+    window.addEventListener("resize", () => {
+      camera.aspect = window.innerWidth/window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    function animate() { requestAnimationFrame(animate); controls.update(); renderer.render(scene, camera); }
+    animate();
+  })();
 })();
 </script>
 </body>
 </html>
 """
     html = (html_template
+            .replace("__LOCAL_LIBS__", local_scripts)
+            .replace("__USE_LOCAL__", "true" if use_local else "false")
             .replace("__GRID_SIZE__", str(grid_size))
             .replace("__CELL__", str(cell))
             .replace("__FREE_BUILD__", str(free_build).lower())
