@@ -312,7 +312,6 @@ def render_voxel_builder(inventory: Counter, world=None, grid_size=24, cell=1.0,
 
   refreshUI();
 
-  // Load world (doesn’t charge inventory)
   function loadWorld(w) {
     for (const [k,m] of voxels) {
       voxelGroup.remove(m); m.geometry.dispose(); if (m.material.map) m.material.map.dispose(); m.material.dispose();
@@ -329,7 +328,6 @@ def render_voxel_builder(inventory: Counter, world=None, grid_size=24, cell=1.0,
   }
   loadWorld(world);
 
-  // UI buttons
   let mode = "place";
   const modeBtn = document.getElementById("modeBtn");
   modeBtn.onclick = () => {
@@ -354,7 +352,6 @@ def render_voxel_builder(inventory: Counter, world=None, grid_size=24, cell=1.0,
     r.readAsText(f);
   });
 
-  // Mouse interaction
   function onPointerDown(event) {
     event.preventDefault();
     const rect = renderer.domElement.getBoundingClientRect();
@@ -466,7 +463,6 @@ with tab_practice:
     st.caption("3 attempts per question. Correct answers award blocks. Number range up to 1000 (see sidebar).")
 
     if st.session_state.finished:
-        # Results screen (no st.stop!)
         n_total = len(st.session_state.questions)
         st.success(f"All done! Score: **{st.session_state.score} / {n_total}** 🎉")
         pct = int(round(100 * st.session_state.score / max(n_total, 1)))
@@ -477,12 +473,11 @@ with tab_practice:
             st.markdown("\n".join(f"- {r}" for r in rows))
         st.info("Switch to the **3D Builder** tab to build with your blocks!")
     else:
-        # Current question flow
         idx = int(st.session_state.idx)
         n_total = len(st.session_state.questions)
         if idx >= n_total:
             st.session_state.finished = True
-            st.experimental_rerun()
+            st.rerun()
 
         q = st.session_state.questions[idx]
         st.write(f"**Question {idx + 1} of {n_total}**")
@@ -529,7 +524,7 @@ with tab_practice:
                     st.session_state.user_answer = None
                     if st.session_state.idx >= len(st.session_state.questions):
                         st.session_state.finished = True
-                    st.experimental_rerun()
+                    st.rerun()
         with c2:
             if st.button("🔁 Restart practice (keep blocks)", use_container_width=True):
                 reset_game(num_q=st.session_state.get("pq_num_q", 10),
@@ -540,7 +535,7 @@ with tab_practice:
                                 st.session_state.get("pq_sub",True),
                                 st.session_state.get("pq_mul",True),
                                 st.session_state.get("pq_div",True)]) if on])
-                st.experimental_rerun()
+                st.rerun()
 
 # ==================== 3D BUILDER TAB ====================
 with tab_builder3d:
@@ -551,7 +546,7 @@ with tab_builder3d:
     with c1:
         if st.button("➕ Grant starter blocks (Stone×10, Grass×5)"):
             st.session_state.inventory += ["Stone"]*10 + ["Grass"]*5
-            st.experimental_rerun()
+            st.rerun()
     with c2:
         free_build = st.checkbox("Free build mode (ignore inventory)", value=False)
 
