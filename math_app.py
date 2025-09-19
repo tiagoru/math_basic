@@ -107,12 +107,12 @@ def inventory_counts() -> Counter:
 # -------------------- 3D builder component (UMD + base64, no f-strings) --------------------
 def render_voxel_builder(inventory: Counter, world=None, grid_size=24, cell=1.0, free_build: bool=False):
     """
-    Works in Streamlit Cloud iframes:
-      • Three.js UMD scripts (no module/CSP issues)
-      • Base64-embedded textures (no relative fetches)
-      • Free-build option ignores inventory
+    3D voxel editor with robust Three.js loading:
+      • Tries multiple CDNs (jsDelivr → unpkg → cdnjs) at runtime.
+      • Uses base64 textures (no CORS/paths).
+      • Optional free_build ignores inventory.
     """
-    import base64, io, json
+    import base64, io, json as _json
     import streamlit.components.v1 as components
 
     names = [b["name"] for b in BLOCKS]
@@ -123,8 +123,7 @@ def render_voxel_builder(inventory: Counter, world=None, grid_size=24, cell=1.0,
             return None
         buf = io.BytesIO()
         img.save(buf, format="PNG")
-        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-        return f"data:image/png;base64,{b64}"
+        return f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
 
     textures = {n: img_data_uri(n) for n in names}
     colors   = {b["name"]: b["color"] for b in BLOCKS}
@@ -166,16 +165,50 @@ def render_voxel_builder(inventory: Counter, world=None, grid_size=24, cell=1.0,
   <input id="loadFile" type="file" accept="application/json"/>
   <div id="inv"><b>Inventory</b></div>
 </div>
-<div id="msg">Loading 3D…</div>
-
-<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/controls/OrbitControls.js"></script>
+<div id="msg">Loading 3D libraries…</div>
 
 <script>
-(function() {
+(async function() {
+  const msg = document.getElementById("msg");
+
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = src; s.async = true;
+      s.onload = () => resolve(src);
+      s.onerror = () => reject(new Error("Failed: " + src));
+      document.head.appendChild(s);
+    });
+  }
+  async function tryMany(urls, label) {
+    for (const u of urls) {
+      try { await loadScript(u); return u; } catch (e) { /* try next */ }
+    }
+    throw new Error("All " + label + " failed");
+  }
+
+  const threeURLs = [
+    "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js",
+    "https://unpkg.com/three@0.160.0/build/three.min.js",
+    "https://cdnjs.cloudflare.com/ajax/libs/three.js/r160/three.min.js"
+  ];
+  const ocURLs = [
+    "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/controls/OrbitControls.js",
+    "https://unpkg.com/three@0.160.0/examples/js/controls/OrbitControls.js",
+    "https://cdnjs.cloudflare.com/ajax/libs/three.js/r160/examples/js/controls/OrbitControls.min.js",
+    "https://cdnjs.cloudflare.com/ajax/libs/three.js/r160/examples/js/controls/OrbitControls.js"
+  ];
+
+  try {
+    await tryMany(threeURLs, "Three.js");
+    await tryMany(ocURLs, "OrbitControls");
+  } catch (err) {
+    document.body.innerHTML = '<div style="color:#fff;font-family:system-ui;padding:16px">⚠️ Failed to load Three.js (all CDNs blocked).<br/>Fix: allow one CDN, or host the files locally and I\'ll wire them up.</div>';
+    return;
+  }
+
   if (!window.THREE || !THREE.OrbitControls) {
-    document.body.innerHTML =
-      '<div style="color:#fff;font-family:system-ui;padding:16px">⚠️ Failed to load Three.js. Try reloading or check network/CDN.</div>';
+    document.body.innerHTML = '<div style="color:#fff;font-family:system-ui;padding:16px">⚠️ Three.js loaded but controls missing.</div>';
     return;
   }
 
@@ -306,8 +339,7 @@ def render_voxel_builder(inventory: Counter, world=None, grid_size=24, cell=1.0,
   function refreshUI() {
     refreshDropdown();
     refreshInventory();
-    document.getElementById("msg").textContent =
-      "Left click: place • Shift/Right click: remove • Drag: orbit • Scroll: zoom";
+    msg.textContent = "Left click: place • Shift/Right click: remove • Drag: orbit • Scroll: zoom";
   }
 
   refreshUI();
@@ -328,30 +360,6 @@ def render_voxel_builder(inventory: Counter, world=None, grid_size=24, cell=1.0,
   }
   loadWorld(world);
 
-  let mode = "place";
-  const modeBtn = document.getElementById("modeBtn");
-  modeBtn.onclick = () => {
-    mode = (mode === "place") ? "remove" : "place";
-    modeBtn.textContent = "Mode: " + (mode === "place" ? "Place" : "Remove");
-  };
-  document.getElementById("saveBtn").onclick = () => {
-    const data = { voxels: [] };
-    for (const [k,info] of voxelData) {
-      const parts = k.split("|").map(Number);
-      data.voxels.push({ x: parts[0], y: parts[1], z: parts[2], name: info.name });
-    }
-    const blob = new Blob([JSON.stringify(data,null,2)], {type:"application/json"});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a"); a.href = url; a.download = "world3d.json"; a.click();
-    URL.revokeObjectURL(url);
-  };
-  document.getElementById("loadFile").addEventListener("change", (e) => {
-    const f = e.target.files[0]; if (!f) return;
-    const r = new FileReader();
-    r.onload = () => { try { loadWorld(JSON.parse(r.result)); } catch(err) { alert("Bad JSON: "+err); } };
-    r.readAsText(f);
-  });
-
   function onPointerDown(event) {
     event.preventDefault();
     const rect = renderer.domElement.getBoundingClientRect();
@@ -361,7 +369,7 @@ def render_voxel_builder(inventory: Counter, world=None, grid_size=24, cell=1.0,
 
     const pickVox   = raycaster.intersectObjects(Array.from(voxels.values()), false)[0];
     const pickPlane = raycaster.intersectObject(plane, false)[0];
-    const wantRemove = (mode === "remove") || (event.button === 2) || event.shiftKey;
+    const wantRemove = (event.shiftKey) || (event.button === 2);
 
     if (wantRemove && pickVox) {
       const p = pickVox.object.position.clone().subScalar(CELL/2);
@@ -397,17 +405,14 @@ def render_voxel_builder(inventory: Counter, world=None, grid_size=24, cell=1.0,
     renderer.setSize(window.innerWidth, window.innerHeight);
   });
 
+  const controls = new THREE.OrbitControls(camera, renderer.domElement);
   function animate() { requestAnimationFrame(animate); controls.update(); renderer.render(scene, camera); }
   animate();
-
-  document.getElementById("msg").textContent =
-    "Left click: place • Shift/Right click: remove • Drag: orbit • Scroll: zoom";
 })();
 </script>
 </body>
 </html>
 """
-    import json as _json
     html = (html_template
             .replace("__GRID_SIZE__", str(grid_size))
             .replace("__CELL__", str(cell))
@@ -419,138 +424,4 @@ def render_voxel_builder(inventory: Counter, world=None, grid_size=24, cell=1.0,
             .replace("__INV__", _json.dumps(inv_map))
             .replace("__WORLD__", _json.dumps(world))
            )
-    import streamlit.components.v1 as components
     components.html(html, height=720, scrolling=False)
-
-# -------------------- Initialize state BEFORE UI --------------------
-if "questions" not in st.session_state:
-    reset_game()
-
-# -------------------- Tabs --------------------
-tab_practice, tab_builder3d = st.tabs(["🧮 Practice", "🧱 3D Builder"])
-
-# ==================== PRACTICE TAB ====================
-with tab_practice:
-    with st.sidebar:
-        st.header("⚙️ Practice Settings")
-        n_questions = st.slider("Number of questions", 5, 20, 10, 1, key="pq_num_q")
-        max_n = st.slider("Largest number", 5, 1000, 12, 1, key="pq_max_n")
-        include_add = st.checkbox("Addition (+)", True, key="pq_add")
-        include_sub = st.checkbox("Subtraction (−)", True, key="pq_sub")
-        include_mul = st.checkbox("Multiplication (×)", True, key="pq_mul")
-        include_div = st.checkbox("Division (÷)", True, key="pq_div")
-
-        ops = []
-        if include_add: ops.append("+")
-        if include_sub: ops.append("−")
-        if include_mul: ops.append("×")
-        if include_div: ops.append("÷")
-
-        if st.button("🔄 Start new game", type="primary", use_container_width=True, disabled=not ops):
-            reset_game(num_q=n_questions, min_n=0, max_n=max_n, ops=ops)
-            st.rerun()
-
-        st.divider()
-        st.subheader("🎒 Inventory (earned blocks)")
-        inv_counts_sidebar = inventory_counts()
-        if inv_counts_sidebar:
-            for name, cnt in sorted(inv_counts_sidebar.items()):
-                st.write(f"{get_block_emoji(name)} **{name}** × **{cnt}**")
-        else:
-            st.caption("No blocks yet — answer correctly to collect some! ⛏️")
-
-    st.title("🧮 Kids Math Trainer")
-    st.caption("3 attempts per question. Correct answers award blocks. Number range up to 1000 (see sidebar).")
-
-    if st.session_state.finished:
-        n_total = len(st.session_state.questions)
-        st.success(f"All done! Score: **{st.session_state.score} / {n_total}** 🎉")
-        pct = int(round(100 * st.session_state.score / max(n_total, 1)))
-        st.progress(pct / 100)
-        if pct == 100: st.balloons()
-        with st.expander("See all questions and answers"):
-            rows = [f"{q['text'].replace('= ?', '= ' + str(q['answer']))}" for q in st.session_state.questions]
-            st.markdown("\n".join(f"- {r}" for r in rows))
-        st.info("Switch to the **3D Builder** tab to build with your blocks!")
-    else:
-        idx = int(st.session_state.idx)
-        n_total = len(st.session_state.questions)
-        if idx >= n_total:
-            st.session_state.finished = True
-            st.rerun()
-
-        q = st.session_state.questions[idx]
-        st.write(f"**Question {idx + 1} of {n_total}**")
-        st.progress(idx / max(n_total, 1))
-
-        st.markdown(f"### {q['text']}")
-        st.caption(f"Attempts left: **{st.session_state.attempts_left}**")
-
-        with st.form("answer_form", clear_on_submit=False):
-            ans = st.number_input(
-                "Your answer",
-                value=st.session_state.user_answer if st.session_state.user_answer is not None else 0,
-                step=1, format="%d"
-            )
-            submitted = st.form_submit_button("Check")
-
-        if submitted and not st.session_state.question_done:
-            st.session_state.user_answer = int(ans)
-            if int(ans) == q["answer"]:
-                st.session_state.score += 1
-                won = award_block()
-                st.toast(f"You earned a {get_block_emoji(won)} {won} block!", icon="✅")
-                st.session_state.feedback = f"✅ Correct! You got a **{won}** block!"
-                st.session_state.question_done = True
-            else:
-                st.session_state.attempts_left -= 1
-                if st.session_state.attempts_left > 0:
-                    st.session_state.feedback = f"❌ Not quite. Try again! Attempts left: {st.session_state.attempts_left}"
-                else:
-                    st.session_state.feedback = f"❌ Out of attempts. The correct answer was **{q['answer']}**."
-                    st.session_state.question_done = True
-
-        if st.session_state.feedback:
-            (st.info if st.session_state.question_done else st.warning)(st.session_state.feedback)
-
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.session_state.question_done:
-                if st.button("➡️ Next question", type="primary", use_container_width=True):
-                    st.session_state.idx += 1
-                    st.session_state.attempts_left = 3
-                    st.session_state.feedback = ""
-                    st.session_state.question_done = False
-                    st.session_state.user_answer = None
-                    if st.session_state.idx >= len(st.session_state.questions):
-                        st.session_state.finished = True
-                    st.rerun()
-        with c2:
-            if st.button("🔁 Restart practice (keep blocks)", use_container_width=True):
-                reset_game(num_q=st.session_state.get("pq_num_q", 10),
-                           min_n=0,
-                           max_n=st.session_state.get("pq_max_n", 12),
-                           ops=[op for op, on in zip(["+","−","×","÷"],
-                               [st.session_state.get("pq_add",True),
-                                st.session_state.get("pq_sub",True),
-                                st.session_state.get("pq_mul",True),
-                                st.session_state.get("pq_div",True)]) if on])
-                st.rerun()
-
-# ==================== 3D BUILDER TAB ====================
-with tab_builder3d:
-    st.title("🧱 3D Builder (voxel world)")
-    st.caption("Use earned blocks to build. Left click: place • Shift/Right click: remove • Drag: orbit • Scroll: zoom.")
-
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("➕ Grant starter blocks (Stone×10, Grass×5)"):
-            st.session_state.inventory += ["Stone"]*10 + ["Grass"]*5
-            st.rerun()
-    with c2:
-        free_build = st.checkbox("Free build mode (ignore inventory)", value=False)
-
-    inv_counts = inventory_counts()
-    if not inv_counts and not free_build:
-        st.warning("No blocks yet — earn some in Practice or enable Free build.")
-    render_voxel_builder(inv_counts, world=None, grid_size=24, cell=1.0, free_build=free_build)
